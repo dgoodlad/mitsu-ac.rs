@@ -107,13 +107,21 @@ impl Checksummable for [u8] {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Packet<'a> {
-    ChecksumOk { packet_type: PacketType, data: &'a [u8] },
-    ChecksumInvalid { packet_type: PacketType, data: &'a [u8] },
+    ChecksumOk { packet_type: PacketType, data: &'a [u8], checksum: ValidChecksum },
+    ChecksumInvalid { packet_type: PacketType, data: &'a [u8], checksum: InvalidChecksum },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Checksum(u32);
-struct VerifiedChecksum(u8);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct ValidChecksum(u8);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct InvalidChecksum {
+    received: Checksum,
+    calculated: Checksum,
+}
 
 impl Add for Checksum {
     type Output = Checksum;
@@ -130,19 +138,15 @@ impl From<u8> for Checksum {
 }
 
 impl Checksum {
-    fn verify(self, other: Checksum) -> Result<VerifiedChecksum, InvalidChecksum> {
+    fn verify(self, other: Checksum) -> Result<ValidChecksum, InvalidChecksum> {
         if other == self {
-            Ok(VerifiedChecksum(self.0 as u8))
+            Ok(ValidChecksum(self.0 as u8))
         } else {
-            Err(InvalidChecksum { received: other, calculated: self })
+            Err(InvalidChecksum { received: self, calculated: other })
         }
     }
 }
 
-struct InvalidChecksum {
-    received: Checksum,
-    calculated: Checksum,
-}
 
 named!(length_sum<u32>, do_parse!(
     length: peek!(be_u8) >>
@@ -171,13 +175,20 @@ named!(packet<Packet>, do_parse!(
     data_sum: peek!(map!(take!(header.length), <[u8]>::checksum)) >>
     data: take!(header.length) >>
     checksum: do_parse!(
-        received: be_u8 >>
-        checksum: return_error!(ErrorKind::Custom(data_sum.0), expr_res!(Checksum::from(received).verify(header_sum + data_sum))) >>
-        (checksum)
+        received: map!(be_u8, Checksum::from) >>
+        (received.verify(header_sum + data_sum))
     ) >>
-    (Packet::ChecksumOk {
-        packet_type: header.packet_type,
-        data: data,
+    (match checksum {
+        Ok(valid) => Packet::ChecksumOk {
+            packet_type: header.packet_type,
+            data: data,
+            checksum: valid,
+        },
+        Err(invalid) => Packet::ChecksumInvalid {
+            packet_type: header.packet_type,
+            data: data,
+            checksum: invalid,
+        }
     })
 ));
 
@@ -198,8 +209,16 @@ mod tests {
             Ok((&b""[..], Packet::ChecksumOk {
                 packet_type: PacketType::ConnectAck,
                 data: &[0x00],
+                checksum: ValidChecksum(0xac),
             }))
-        )
+        );
+        assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0x42]),
+            Ok((&b""[..], Packet::ChecksumInvalid {
+                packet_type: PacketType::ConnectAck,
+                data: &[0x00],
+                checksum: InvalidChecksum { calculated: Checksum(0xac), received: Checksum(0x42) },
+            }))
+        );
     }
 
     #[test]
