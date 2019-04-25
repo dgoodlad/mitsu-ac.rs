@@ -1,4 +1,5 @@
-use nom::{be_u8};
+use nom::*;
+use core::ops::Add;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,12 +19,6 @@ impl From<u8> for PacketType {
             _ => PacketType::Unknown,
         }
     }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct Header {
-    packet_type: PacketType,
-    length: u8,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -88,60 +83,101 @@ struct SettingsData {
     isee: Option<ISee>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct Packet<'a> {
-    packet_type: PacketType,
-    data: &'a [u8],
-    checksum: Checksum,
+trait Checksummable {
+    fn checksum(&self) -> Checksum;
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Checksum(u8);
+struct PacketHeader {
+    packet_type: PacketType,
+    length: usize,
+}
 
-impl<'a> From<&Packet<'a>> for Checksum {
-    fn from(packet: &Packet) -> Checksum {
-        let length = packet.data.len() as u8;
-        let sum = packet.data.iter().sum::<u8>();
-        Checksum((0x01 + 0x30 + packet.packet_type as u8 + length + sum) & 0xff)
+impl Checksummable for PacketHeader {
+    fn checksum(&self) -> Checksum {
+        Checksum(0x31 + self.packet_type as u32 + self.length as u32)
     }
 }
 
-impl<'a> Packet<'a> {
-    fn valid_checksum(&self) -> bool {
-        self.checksum == Checksum::from(self)
+impl Checksummable for [u8] {
+    fn checksum(&self) -> Checksum {
+        Checksum(self.iter().fold(0u32, |a,b| a + (*b as u32)))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Packet<'a> {
+    ChecksumOk { packet_type: PacketType, data: &'a [u8] },
+    ChecksumInvalid { packet_type: PacketType, data: &'a [u8] },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Checksum(u32);
+struct VerifiedChecksum(u8);
+
+impl Add for Checksum {
+    type Output = Checksum;
+
+    fn add(self, other: Checksum) -> Checksum {
+        Checksum(self.0 + other.0)
+    }
+}
+
+impl From<u8> for Checksum {
+    fn from(byte: u8) -> Checksum {
+        Checksum(byte as u32)
+    }
+}
+
+impl Checksum {
+    fn verify(self, other: Checksum) -> Result<VerifiedChecksum, InvalidChecksum> {
+        if other == self {
+            Ok(VerifiedChecksum(self.0 as u8))
+        } else {
+            Err(InvalidChecksum { received: other, calculated: self })
+        }
     }
 }
 
 struct InvalidChecksum {
-    received: u8,
-    calculated: u8,
+    received: Checksum,
+    calculated: Checksum,
 }
 
-fn verify_checksum(checksum: u8, packet_type: u8, data_sum: u8) -> Result<u8, InvalidChecksum> {
-    let calculated = (packet_type + 0x01 + 0x30 + data_sum) & 0xff;
-    if calculated == checksum {
-        Ok(checksum)
-    } else {
-        Err(InvalidChecksum { received: checksum, calculated: calculated })
-    }
-}
-
-named!(length_sum<u8>, do_parse!(
-    length: be_u8 >>
-    sum: fold_many_m_n!(length as usize, length as usize, be_u8, 0, |acc, item| acc + item) >>
+named!(length_sum<u32>, do_parse!(
+    length: peek!(be_u8) >>
+    sum: map!(take!(length + 1), sum_bytes) >>
     (sum)
 ));
 
-named!(packet<Packet>, do_parse!(
+named!(header<PacketHeader>, do_parse!(
     tag!(&[0xfc]) >>
-    packet_type: be_u8 >>
+    packet_type: packet_type >>
     tag!(&[0x01, 0x30]) >>
-    data: length_bytes!(be_u8) >>
-    checksum: be_u8 >>
-    (Packet {
-        packet_type: PacketType::from(packet_type),
+    length: map!(be_u8, |b| b as usize) >>
+    (PacketHeader { packet_type, length: length })
+));
+
+named!(packet_type<PacketType>, map!(be_u8, PacketType::from));
+
+#[allow(dead_code)]
+fn sum_bytes(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0u32, |a,b| a + (*b as u32))
+}
+
+named!(packet<Packet>, do_parse!(
+    header: header >>
+    header_sum: expr_opt!(Some(header.checksum())) >>
+    data_sum: peek!(map!(take!(header.length), <[u8]>::checksum)) >>
+    data: take!(header.length) >>
+    checksum: do_parse!(
+        received: be_u8 >>
+        checksum: return_error!(ErrorKind::Custom(data_sum.0), expr_res!(Checksum::from(received).verify(header_sum + data_sum))) >>
+        (checksum)
+    ) >>
+    (Packet::ChecksumOk {
+        packet_type: header.packet_type,
         data: data,
-        checksum: Checksum(checksum),
     })
 ));
 
@@ -150,18 +186,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn header_test() {
+        assert_eq!(header(&[0xfc, 0x41, 0x01, 0x30, 0x42]),
+            Ok((&b""[..], PacketHeader { packet_type: PacketType::Set, length: 0x42 }))
+        );
+    }
+
+    #[test]
     fn packet_test() {
-        assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0x54]),
-            Ok((&b""[..], Packet {
+        assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0xac]),
+            Ok((&b""[..], Packet::ChecksumOk {
                 packet_type: PacketType::ConnectAck,
                 data: &[0x00],
-                checksum: Checksum(0x54),
             }))
         )
     }
 
     #[test]
     fn length_sum_test() {
-        assert_eq!(length_sum(&[0x2, 0x20, 0x22]), Ok((&b""[..], 0x42)));
+        assert_eq!(length_sum(&[0x2, 0x20, 0x22]), Ok((&b""[..], 0x44)));
     }
 }
