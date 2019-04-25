@@ -196,24 +196,33 @@ named!(packet<Packet>, do_parse!(
 mod tests {
     use super::*;
 
+    const EMPTY: &[u8] = &[];
+
     #[test]
     fn header_test() {
         assert_eq!(header(&[0xfc, 0x41, 0x01, 0x30, 0x42]),
-            Ok((&b""[..], PacketHeader { packet_type: PacketType::Set, length: 0x42 }))
+            Ok((EMPTY, PacketHeader { packet_type: PacketType::Set, length: 0x42 }))
         );
     }
 
     #[test]
     fn packet_test() {
         assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0xac]),
-            Ok((&b""[..], Packet::ChecksumOk {
+            Ok((EMPTY, Packet::ChecksumOk {
                 packet_type: PacketType::ConnectAck,
                 data: &[0x00],
                 checksum: ValidChecksum(0xac),
             }))
         );
+        assert_eq!(packet(&[0xfc, 0x41, 0x01, 0x30, 0x010, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0xfa]),
+            Ok((EMPTY, Packet::ChecksumOk {
+                packet_type: PacketType::Set,
+                data: &[0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00],
+                checksum: ValidChecksum(0xfa),
+            }))
+        );
         assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0x42]),
-            Ok((&b""[..], Packet::ChecksumInvalid {
+            Ok((EMPTY, Packet::ChecksumInvalid {
                 packet_type: PacketType::ConnectAck,
                 data: &[0x00],
                 checksum: InvalidChecksum { calculated: Checksum(0xac), received: Checksum(0x42) },
