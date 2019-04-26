@@ -272,6 +272,9 @@ named!(packet<Packet>, do_parse!(
 ));
 
 #[derive(Debug, PartialEq, Eq)]
+struct Temperature(u8);
+
+#[derive(Debug, PartialEq, Eq)]
 enum ParsedData {
     Settings {
         power: Power,
@@ -282,6 +285,7 @@ enum ParsedData {
         widevane: WideVane,
         isee: ISee,
     },
+    RoomTemperature { temperature: Temperature },
     Failed,
 }
 
@@ -302,7 +306,13 @@ named!(settings_data<ParsedData>, do_parse!(
     })
 ));
 
-named!(room_temp_data<ParsedData>, do_parse!((ParsedData::Failed)));
+named!(room_temp_data<ParsedData>, do_parse!(
+    take!(5) >>
+    temperature: map!(be_u8, Temperature) >>
+    take!(9) >>
+    (ParsedData::RoomTemperature { temperature })
+));
+
 named!(timer_data<ParsedData>, do_parse!((ParsedData::Failed)));
 named!(status_data<ParsedData>, do_parse!((ParsedData::Failed)));
 named!(unknown_data<ParsedData>, do_parse!((ParsedData::Failed)));
@@ -364,6 +374,18 @@ mod tests {
 
     #[test]
     fn settings_data_test() {
+        assert_eq!(settings_data(&[0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, ParsedData::Settings {
+                power: Power::On,
+                mode: Mode::Heat,
+                setpoint: Setpoint(0x94),
+                fan: Fan::Auto,
+                vane: Vane::Swing,
+                widevane: WideVane::Center,
+                isee: ISee::Unknown,
+
+            }))
+        );
         assert_eq!(settings_data(&[0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
             Ok((EMPTY, ParsedData::Settings {
                 power: Power::On,
@@ -376,5 +398,15 @@ mod tests {
 
             }))
         );
+    }
+
+    #[test]
+    fn temperature_data_test() {
+        assert_eq!(room_temp_data(&[0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, ParsedData::RoomTemperature {
+                temperature: Temperature(0xaa),
+            }))
+        );
+
     }
 }
