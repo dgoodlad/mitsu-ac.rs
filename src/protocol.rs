@@ -227,13 +227,6 @@ impl Checksum {
     }
 }
 
-
-named!(length_sum<u32>, do_parse!(
-    length: peek!(be_u8) >>
-    sum: map!(take!(length + 1), sum_bytes) >>
-    (sum)
-));
-
 named!(header<PacketHeader>, do_parse!(
     tag!(&[0xfc]) >>
     packet_type: packet_type >>
@@ -243,11 +236,6 @@ named!(header<PacketHeader>, do_parse!(
 ));
 
 named!(packet_type<PacketType>, map!(be_u8, PacketType::from));
-
-#[allow(dead_code)]
-fn sum_bytes(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0u32, |a,b| a + (*b as u32))
-}
 
 named!(packet<Packet>, do_parse!(
     header: header >>
@@ -284,7 +272,6 @@ enum ParsedData {
     RoomTemperature { temperature: Temperature },
     Status { compressor_frequency: u8, operating: u8 },
     Unknown,
-    Failed,
 }
 
 named!(settings_data<ParsedData>, do_parse!(
@@ -374,11 +361,6 @@ mod tests {
                 checksum: InvalidChecksum { calculated: Checksum(0xac), received: Checksum(0x42) },
             }))
         );
-    }
-
-    #[test]
-    fn length_sum_test() {
-        assert_eq!(length_sum(&[0x2, 0x20, 0x22]), Ok((&b""[..], 0x44)));
     }
 
     #[test]
