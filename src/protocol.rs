@@ -286,6 +286,7 @@ enum ParsedData {
         isee: ISee,
     },
     RoomTemperature { temperature: Temperature },
+    Status { compressor_frequency: u8, operating: u8 },
     Failed,
 }
 
@@ -313,8 +314,14 @@ named!(room_temp_data<ParsedData>, do_parse!(
     (ParsedData::RoomTemperature { temperature })
 ));
 
+named!(status_data<ParsedData>, do_parse!(
+    take!(2) >>
+    compressor_frequency: be_u8 >>
+    operating: be_u8 >>
+    (ParsedData::Status { compressor_frequency, operating })
+));
+
 named!(timer_data<ParsedData>, do_parse!((ParsedData::Failed)));
-named!(status_data<ParsedData>, do_parse!((ParsedData::Failed)));
 named!(unknown_data<ParsedData>, do_parse!((ParsedData::Failed)));
 
 //named!(data<ParsedData>,
