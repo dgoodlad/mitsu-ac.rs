@@ -178,7 +178,7 @@ impl Checksummable for PacketHeader {
     }
 }
 
-impl Checksummable for [u8] {
+impl Checksummable for &[u8] {
     fn checksum(&self) -> Checksum {
         Checksum(self.iter().fold(0u32, |a,b| a + (*b as u32)))
     }
@@ -217,11 +217,12 @@ impl From<u8> for Checksum {
 }
 
 impl Checksum {
-    fn verify(self, other: Checksum) -> Result<ValidChecksum, InvalidChecksum> {
-        if other == self {
+    fn verify(self, header: &Checksummable, data: &Checksummable) -> Result<ValidChecksum, InvalidChecksum> {
+        let calculated = header.checksum() + data.checksum();
+        if calculated == self {
             Ok(ValidChecksum(self.0 as u8))
         } else {
-            Err(InvalidChecksum { received: self, calculated: other })
+            Err(InvalidChecksum { received: self, calculated })
         }
     }
 }
@@ -250,14 +251,9 @@ fn sum_bytes(bytes: &[u8]) -> u32 {
 
 named!(packet<Packet>, do_parse!(
     header: header >>
-    header_sum: expr_opt!(Some(header.checksum())) >>
-    data_sum: peek!(map!(take!(header.length), <[u8]>::checksum)) >>
     data: take!(header.length) >>
-    checksum: do_parse!(
-        received: map!(be_u8, Checksum::from) >>
-        (received.verify(header_sum + data_sum))
-    ) >>
-    (match checksum {
+    received_checksum: map!(be_u8, Checksum::from) >>
+    (match received_checksum.verify(&header, &data) {
         Ok(valid) => Packet::ChecksumOk {
             packet_type: header.packet_type,
             data: data,
