@@ -6,6 +6,7 @@ use core::ops::Add;
 enum PacketType {
     Set = 0x41,
     Get = 0x42,
+    Response = 0x62,
     ConnectAck = 0x7a,
     Unknown = 0xff,
 }
@@ -25,6 +26,17 @@ impl From<u8> for PacketType {
 enum Power {
     On,
     Off,
+    Unknown,
+}
+
+impl From<u8> for Power {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => Power::Off,
+            1 => Power::On,
+            _ => Power::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -34,9 +46,24 @@ enum Mode {
     Cool,
     Fan,
     Auto,
+    Unknown,
 }
 
-type Setpoint = u8;
+impl From<u8> for Mode {
+    fn from(byte: u8) -> Self {
+        match byte {
+            1 => Mode::Heat,
+            2 => Mode::Dry,
+            3 => Mode::Cool,
+            7 => Mode::Fan,
+            8 => Mode::Auto,
+            _ => Mode::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Setpoint(u8);
 
 #[derive(Debug, Eq, PartialEq)]
 enum Fan {
@@ -46,6 +73,21 @@ enum Fan {
     F2,
     F3,
     F4,
+    Unknown,
+}
+
+impl From<u8> for Fan {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => Fan::Auto,
+            1 => Fan::Quiet,
+            2 => Fan::F1,
+            3 => Fan::F2,
+            5 => Fan::F3,
+            6 => Fan::F4,
+            _ => Fan::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -57,6 +99,22 @@ enum Vane {
     V4,
     V5,
     Swing,
+    Unknown,
+}
+
+impl From<u8> for Vane {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => Vane::Auto,
+            1 => Vane::V1,
+            2 => Vane::V2,
+            3 => Vane::V3,
+            4 => Vane::V4,
+            5 => Vane::V5,
+            7 => Vane::Swing,
+            _ => Vane::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -68,19 +126,40 @@ enum WideVane {
     RR,
     LR,
     Swing,
+    Unknown,
 }
 
-type ISee = bool;
+impl From<u8> for WideVane {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0x1 => WideVane::LL,
+            0x2 => WideVane::L,
+            0x3 => WideVane::Center,
+            0x4 => WideVane::R,
+            0x5 => WideVane::RR,
+            0x8 => WideVane::LR,
+            0xc => WideVane::Swing,
+            _   => WideVane::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ISee {
+    On,
+    Off,
+    Unknown,
+}
 
 #[derive(Debug, Eq, PartialEq)]
 struct SettingsData {
-    power: Option<Power>,
-    mode: Option<Mode>,
-    setpoint: Option<Setpoint>,
-    fan: Option<Fan>,
-    vane: Option<Vane>,
-    widevane: Option<WideVane>,
-    isee: Option<ISee>,
+    power: Power,
+    mode: Mode,
+    setpoint: Setpoint,
+    fan: Fan,
+    vane: Vane,
+    widevane: WideVane,
+    isee: ISee,
 }
 
 trait Checksummable {
@@ -192,6 +271,54 @@ named!(packet<Packet>, do_parse!(
     })
 ));
 
+#[derive(Debug, PartialEq, Eq)]
+enum ParsedData {
+    Settings {
+        power: Power,
+        mode: Mode,
+        setpoint: Setpoint,
+        fan: Fan,
+        vane: Vane,
+        widevane: WideVane,
+        isee: ISee,
+    },
+    Failed,
+}
+
+named!(settings_data<ParsedData>, do_parse!(
+    take!(2) >>
+    power: map!(be_u8, Power::from) >>
+    // TODO when mode:bit3 is set, isee = true
+    mode: map!(be_u8, Mode::from) >>
+    take!(1) >>
+    fan: map!(be_u8, Fan::from) >>
+    vane: map!(be_u8, Vane::from) >>
+    take!(2) >>
+    widevane: map!(be_u8, WideVane::from) >>
+    setpoint: map!(be_u8, Setpoint) >>
+    take!(4) >>
+    (ParsedData::Settings {
+        power, mode, fan, vane, widevane, setpoint, isee: ISee::Unknown
+    })
+));
+
+named!(room_temp_data<ParsedData>, do_parse!((ParsedData::Failed)));
+named!(timer_data<ParsedData>, do_parse!((ParsedData::Failed)));
+named!(status_data<ParsedData>, do_parse!((ParsedData::Failed)));
+named!(unknown_data<ParsedData>, do_parse!((ParsedData::Failed)));
+
+//named!(data<ParsedData>,
+//    switch!(be_u8,
+//            0x02 => settings_packet_data |
+//            0x03 => room_temp_data |
+//            0x04 => unknown_data |
+//            0x05 => timer_data |
+//            0x06 => status_data |
+//            0x09 => unknown_data |
+//            _ => unknown_data
+//    )
+//);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +360,21 @@ mod tests {
     #[test]
     fn length_sum_test() {
         assert_eq!(length_sum(&[0x2, 0x20, 0x22]), Ok((&b""[..], 0x44)));
+    }
+
+    #[test]
+    fn settings_data_test() {
+        assert_eq!(settings_data(&[0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, ParsedData::Settings {
+                power: Power::On,
+                mode: Mode::Heat,
+                setpoint: Setpoint(0xa0),
+                fan: Fan::Auto,
+                vane: Vane::Swing,
+                widevane: WideVane::Center,
+                isee: ISee::Unknown,
+
+            }))
+        );
     }
 }
