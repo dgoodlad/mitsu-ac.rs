@@ -287,10 +287,12 @@ enum ParsedData {
     },
     RoomTemperature { temperature: Temperature },
     Status { compressor_frequency: u8, operating: u8 },
+    Unknown,
     Failed,
 }
 
 named!(settings_data<ParsedData>, do_parse!(
+    tag!(&[0x02]) >>
     take!(2) >>
     power: map!(be_u8, Power::from) >>
     // TODO when mode:bit3 is set, isee = true
@@ -308,33 +310,35 @@ named!(settings_data<ParsedData>, do_parse!(
 ));
 
 named!(room_temp_data<ParsedData>, do_parse!(
+    tag!(&[0x03]) >>
     take!(5) >>
     temperature: map!(be_u8, Temperature) >>
     take!(9) >>
     (ParsedData::RoomTemperature { temperature })
 ));
 
+// TODO parse timer info packet
+named!(timer_data<ParsedData>, do_parse!((ParsedData::Unknown)));
+
+// TODO test the status info packet
 named!(status_data<ParsedData>, do_parse!(
+    tag!(&[0x06]) >>
     take!(2) >>
     compressor_frequency: be_u8 >>
     operating: be_u8 >>
     (ParsedData::Status { compressor_frequency, operating })
 ));
 
-named!(timer_data<ParsedData>, do_parse!((ParsedData::Failed)));
-named!(unknown_data<ParsedData>, do_parse!((ParsedData::Failed)));
+named!(unknown_data<ParsedData>, do_parse!((ParsedData::Unknown)));
 
-//named!(data<ParsedData>,
-//    switch!(be_u8,
-//            0x02 => settings_packet_data |
-//            0x03 => room_temp_data |
-//            0x04 => unknown_data |
-//            0x05 => timer_data |
-//            0x06 => status_data |
-//            0x09 => unknown_data |
-//            _ => unknown_data
-//    )
-//);
+named!(data<ParsedData>, alt!(
+    settings_data |
+    room_temp_data |
+    timer_data |
+    status_data |
+    unknown_data
+    )
+);
 
 #[cfg(test)]
 mod tests {
@@ -381,7 +385,7 @@ mod tests {
 
     #[test]
     fn settings_data_test() {
-        assert_eq!(settings_data(&[0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
+        assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
             Ok((EMPTY, ParsedData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
@@ -393,7 +397,7 @@ mod tests {
 
             }))
         );
-        assert_eq!(settings_data(&[0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
+        assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
             Ok((EMPTY, ParsedData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
@@ -409,7 +413,7 @@ mod tests {
 
     #[test]
     fn temperature_data_test() {
-        assert_eq!(room_temp_data(&[0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+        assert_eq!(data(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Ok((EMPTY, ParsedData::RoomTemperature {
                 temperature: Temperature(0xaa),
             }))
