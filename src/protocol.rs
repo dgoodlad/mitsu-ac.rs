@@ -317,8 +317,10 @@ named!(room_temp_data<ParsedData>, do_parse!(
     (ParsedData::RoomTemperature { temperature })
 ));
 
-// TODO parse timer info packet
-named!(timer_data<ParsedData>, do_parse!((ParsedData::Unknown)));
+named!(timer_data<ParsedData>, do_parse!(
+    tag!(&[0x05]) >>
+    (ParsedData::Unknown)
+));
 
 // TODO test the status info packet
 named!(status_data<ParsedData>, do_parse!(
