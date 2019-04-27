@@ -507,6 +507,36 @@ impl<'a> ControlPacketData {
     }
 }
 
+// TODO use this enum in the parser macros, too
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum InfoType {
+    Settings     = 0x02,
+    RoomTemp     = 0x03,
+    Unknown      = 0x04,
+    Timers       = 0x05,
+    Status       = 0x06,
+    MaybeStandby = 0x09,
+}
+
+impl InfoType {
+    fn encode(&self) -> u8 {
+        self.clone() as u8
+    }
+}
+
+struct InfoPacketData {
+    info_type: InfoType,
+}
+
+impl<'a> InfoPacketData {
+    fn write(&self, data: &'a mut [u8; 16]) -> &'a [u8; 16] {
+        data[0] = self.info_type as u8;
+        for i in &mut data[1..16] { *i = 0u8 }
+        data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +682,15 @@ mod tests {
         assert_eq!(result[8..13], [0x00; 5], "NULL");
         assert_eq!(result[13], 0x01, "widevane");
         assert_eq!(result[14], 0xaa, "temp as half-deg offset");
+    }
+
+    #[test]
+    fn info_packet_data_write_test() {
+        let mut slice = [0x01; 16]; // Make it all 1s to test that the later bytes get zeroed out properly
+        let packet = InfoPacketData { info_type: InfoType::Settings };
+        let result = packet.write(&mut slice);
+
+        assert_eq!(result[0], 0x02, "info type = settings");
+        assert_eq!(result[1..16], [0x00; 15]);
     }
 }
