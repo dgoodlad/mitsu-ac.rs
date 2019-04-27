@@ -4,20 +4,28 @@ use core::ops::Add;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PacketType {
-    Set = 0x41,
-    Get = 0x42,
-    Response = 0x62,
-    ConnectAck = 0x7a,
-    Unknown = 0xff,
+    SetRequest      = 0x41,
+    GetInfoRequest  = 0x42,
+    ConnectRequest  = 0x5a,
+
+    SetResponse     = 0x61,
+    GetInfoResponse = 0x62,
+    ConnectResponse = 0x7a,
+
+    Unknown         = 0xff,
 }
 
 impl From<u8> for PacketType {
     fn from(byte: u8) -> Self {
         match byte {
-            0x41 => PacketType::Set,
-            0x42 => PacketType::Get,
-            0x62 => PacketType::Response,
-            0x7a => PacketType::ConnectAck,
+            0x41 => PacketType::SetRequest,
+            0x42 => PacketType::GetInfoRequest,
+            0x5a => PacketType::ConnectRequest,
+
+            0x61 => PacketType::SetResponse,
+            0x62 => PacketType::GetInfoResponse,
+            0x7a => PacketType::ConnectResponse,
+
             _ => PacketType::Unknown,
         }
     }
@@ -546,7 +554,7 @@ mod tests {
     #[test]
     fn header_test() {
         assert_eq!(header(&[0xfc, 0x41, 0x01, 0x30, 0x42]),
-            Ok((EMPTY, PacketHeader { packet_type: PacketType::Set, length: 0x42 }))
+            Ok((EMPTY, PacketHeader { packet_type: PacketType::SetRequest, length: 0x42 }))
         );
     }
 
@@ -554,21 +562,21 @@ mod tests {
     fn packet_test() {
         assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0xac]),
             Ok((EMPTY, Packet::ChecksumOk {
-                packet_type: PacketType::ConnectAck,
+                packet_type: PacketType::ConnectResponse,
                 data: &[0x00],
                 checksum: ValidChecksum(0xac),
             }))
         );
         assert_eq!(packet(&[0xfc, 0x41, 0x01, 0x30, 0x010, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0xfa]),
             Ok((EMPTY, Packet::ChecksumOk {
-                packet_type: PacketType::Set,
+                packet_type: PacketType::SetRequest,
                 data: &[0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00],
                 checksum: ValidChecksum(0xfa),
             }))
         );
         assert_eq!(packet(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0x42]),
             Ok((EMPTY, Packet::ChecksumInvalid {
-                packet_type: PacketType::ConnectAck,
+                packet_type: PacketType::ConnectResponse,
                 data: &[0x00],
                 checksum: InvalidChecksum { calculated: Checksum(0xac), received: Checksum(0x42) },
             }))
