@@ -1,7 +1,8 @@
 use nom::*;
 use core::ops::Add;
 
-#[repr(u8)]
+pub mod packets;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PacketType {
     SetRequest      = 0x41,
@@ -384,7 +385,7 @@ impl TenthDegreesC {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum GetInfoData {
+enum GetInfoResponseData {
     Settings {
         power: Power,
         mode: Mode,
@@ -399,7 +400,7 @@ enum GetInfoData {
     Unknown,
 }
 
-named!(settings_data<GetInfoData>, do_parse!(
+named!(settings_data<GetInfoResponseData>, do_parse!(
     tag!(&[InfoType::Settings as u8]) >>
     take!(2) >>
     power: map!(be_u8, Power::from) >>
@@ -420,12 +421,12 @@ named!(settings_data<GetInfoData>, do_parse!(
         (_, s) => Setpoint(s),
     }) >>
     take!(4) >>
-    (GetInfoData::Settings {
+    (GetInfoResponseData::Settings {
         power, mode, fan, vane, widevane, setpoint, isee
     })
 ));
 
-named!(room_temp_data<GetInfoData>, do_parse!(
+named!(room_temp_data<GetInfoResponseData>, do_parse!(
     tag!(&[InfoType::RoomTemp as u8]) >>
     take!(2) >>
     mapped: map!(be_u8, |b| Temperature::RoomTempMapped { value: b }) >>
@@ -436,26 +437,26 @@ named!(room_temp_data<GetInfoData>, do_parse!(
         (Temperature::HalfDegreesCPlusOffset { value: 0 }, t) => t,
         (t, _) => t,
     }) >>
-    (GetInfoData::RoomTemperature { temperature })
+    (GetInfoResponseData::RoomTemperature { temperature })
 ));
 
-named!(timer_data<GetInfoData>, do_parse!(
+named!(timer_data<GetInfoResponseData>, do_parse!(
     tag!(&[InfoType::Timers as u8]) >>
-    (GetInfoData::Unknown)
+    (GetInfoResponseData::Unknown)
 ));
 
 // TODO test the status info packet
-named!(status_data<GetInfoData>, do_parse!(
+named!(status_data<GetInfoResponseData>, do_parse!(
     tag!(&[InfoType::Status as u8]) >>
     take!(2) >>
     compressor_frequency: be_u8 >>
     operating: be_u8 >>
-    (GetInfoData::Status { compressor_frequency, operating })
+    (GetInfoResponseData::Status { compressor_frequency, operating })
 ));
 
-named!(unknown_data<GetInfoData>, do_parse!((GetInfoData::Unknown)));
+named!(unknown_data<GetInfoResponseData>, do_parse!((GetInfoResponseData::Unknown)));
 
-named!(data<GetInfoData>, alt!(
+named!(data<GetInfoResponseData>, alt!(
     settings_data |
     room_temp_data |
     timer_data |
@@ -616,7 +617,7 @@ mod tests {
     #[test]
     fn settings_data_test() {
         assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoData::Settings {
+            Ok((EMPTY, GetInfoResponseData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0x94 }),
@@ -628,7 +629,7 @@ mod tests {
             }))
         );
         assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoData::Settings {
+            Ok((EMPTY, GetInfoResponseData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0xa0 }),
@@ -642,12 +643,19 @@ mod tests {
 
     #[test]
     fn temperature_data_test() {
+        // When the half-degrees value is present in byte 6, use it
         assert_eq!(data(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoData::RoomTemperature {
+            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
                 temperature: Temperature::HalfDegreesCPlusOffset{ value: 0xaa },
             }))
         );
-
+        // When the half-degrees value is missing, test that we fall back to the
+        // lower-res "mapped" value from byte 3
+        assert_eq!(data(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
+                temperature: Temperature::RoomTempMapped{ value: 0x0b },
+            }))
+        );
     }
 
     #[test]
