@@ -63,9 +63,6 @@ impl From<u8> for Mode {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct Setpoint(u8);
-
-#[derive(Debug, Eq, PartialEq)]
 enum Fan {
     Auto,
     Quiet,
@@ -150,6 +147,9 @@ enum ISee {
     Off,
     Unknown,
 }
+
+#[derive(Debug, Eq, PartialEq)]
+struct Setpoint(Temperature);
 
 #[derive(Debug, Eq, PartialEq)]
 struct SettingsData {
@@ -256,7 +256,24 @@ named!(packet<Packet>, do_parse!(
 ));
 
 #[derive(Debug, PartialEq, Eq)]
-struct Temperature(u8);
+enum Temperature {
+    HalfDegreesCPlusOffset { value: u8 },
+    SetpointMapped { value: u8 },
+    RoomTempMapped { value: u8 },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TenthDegreesC(u8);
+
+impl Temperature {
+    fn celsius_tenths(&self) -> TenthDegreesC {
+        match self {
+            Temperature::HalfDegreesCPlusOffset { value } => TenthDegreesC((value - 128) * 5),
+            Temperature::SetpointMapped { value } => TenthDegreesC((0x1f - value) * 10),
+            Temperature::RoomTempMapped { value } => TenthDegreesC((value + 10) * 10),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum ParsedData {
@@ -280,12 +297,16 @@ named!(settings_data<ParsedData>, do_parse!(
     power: map!(be_u8, Power::from) >>
     // TODO when mode:bit3 is set, isee = true
     mode: map!(be_u8, Mode::from) >>
-    take!(1) >>
+    setpoint_mapped: map!(be_u8, |b| Temperature::SetpointMapped { value: b })>>
     fan: map!(be_u8, Fan::from) >>
     vane: map!(be_u8, Vane::from) >>
     take!(2) >>
     widevane: map!(be_u8, WideVane::from) >>
-    setpoint: map!(be_u8, Setpoint) >>
+    setpoint_half_deg: map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b }) >>
+    setpoint: value!(match (setpoint_mapped, setpoint_half_deg) {
+        (s, Temperature::HalfDegreesCPlusOffset { value: 0 }) => Setpoint(s),
+        (_, s) => Setpoint(s),
+    }) >>
     take!(4) >>
     (ParsedData::Settings {
         power, mode, fan, vane, widevane, setpoint, isee: ISee::Unknown
@@ -294,9 +315,15 @@ named!(settings_data<ParsedData>, do_parse!(
 
 named!(room_temp_data<ParsedData>, do_parse!(
     tag!(&[0x03]) >>
-    take!(5) >>
-    temperature: map!(be_u8, Temperature) >>
+    take!(2) >>
+    mapped: map!(be_u8, |b| Temperature::RoomTempMapped { value: b }) >>
+    take!(2) >>
+    half_deg: map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b }) >>
     take!(9) >>
+    temperature: value!(match (half_deg, mapped) {
+        (Temperature::HalfDegreesCPlusOffset { value: 0 }, t) => t,
+        (t, _) => t,
+    }) >>
     (ParsedData::RoomTemperature { temperature })
 ));
 
@@ -369,7 +396,7 @@ mod tests {
             Ok((EMPTY, ParsedData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
-                setpoint: Setpoint(0x94),
+                setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0x94 }),
                 fan: Fan::Auto,
                 vane: Vane::Swing,
                 widevane: WideVane::Center,
@@ -381,12 +408,11 @@ mod tests {
             Ok((EMPTY, ParsedData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
-                setpoint: Setpoint(0xa0),
+                setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0xa0 }),
                 fan: Fan::Auto,
                 vane: Vane::Swing,
                 widevane: WideVane::Center,
                 isee: ISee::Unknown,
-
             }))
         );
     }
@@ -395,7 +421,7 @@ mod tests {
     fn temperature_data_test() {
         assert_eq!(data(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
             Ok((EMPTY, ParsedData::RoomTemperature {
-                temperature: Temperature(0xaa),
+                temperature: Temperature::HalfDegreesCPlusOffset{ value: 0xaa },
             }))
         );
 
