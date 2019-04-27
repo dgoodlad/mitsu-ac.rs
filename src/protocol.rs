@@ -224,6 +224,16 @@ enum ISee {
     Unknown,
 }
 
+impl From<u8> for ISee {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0 => ISee::Off,
+            1 => ISee::On,
+            _ => ISee::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct Setpoint(Temperature);
 
@@ -377,8 +387,12 @@ named!(settings_data<ParsedData>, do_parse!(
     tag!(&[0x02]) >>
     take!(2) >>
     power: map!(be_u8, Power::from) >>
-    // TODO when mode:bit3 is set, isee = true
-    mode: map!(be_u8, Mode::from) >>
+    mode_and_isee: bits!(tuple!(
+        take_bits!(u8, 4),
+        map!(take_bits!(u8, 1), ISee::from),
+        map!(take_bits!(u8, 3), Mode::from))) >>
+    isee: value!(mode_and_isee.1) >>
+    mode: value!(mode_and_isee.2) >>
     setpoint_mapped: map!(be_u8, |b| Temperature::SetpointMapped { value: b })>>
     fan: map!(be_u8, Fan::from) >>
     vane: map!(be_u8, Vane::from) >>
@@ -391,7 +405,7 @@ named!(settings_data<ParsedData>, do_parse!(
     }) >>
     take!(4) >>
     (ParsedData::Settings {
-        power, mode, fan, vane, widevane, setpoint, isee: ISee::Unknown
+        power, mode, fan, vane, widevane, setpoint, isee
     })
 ));
 
@@ -593,7 +607,7 @@ mod tests {
                 fan: Fan::Auto,
                 vane: Vane::Swing,
                 widevane: WideVane::Center,
-                isee: ISee::Unknown,
+                isee: ISee::Off,
 
             }))
         );
@@ -605,7 +619,7 @@ mod tests {
                 fan: Fan::Auto,
                 vane: Vane::Swing,
                 widevane: WideVane::Center,
-                isee: ISee::Unknown,
+                isee: ISee::Off,
             }))
         );
     }
