@@ -16,6 +16,7 @@ impl From<u8> for PacketType {
         match byte {
             0x41 => PacketType::Set,
             0x42 => PacketType::Get,
+            0x62 => PacketType::Response,
             0x7a => PacketType::ConnectAck,
             _ => PacketType::Unknown,
         }
@@ -35,6 +36,16 @@ impl From<u8> for Power {
             0 => Power::Off,
             1 => Power::On,
             _ => Power::Unknown,
+        }
+    }
+}
+
+impl Power {
+    fn encode(&self) -> u8 {
+        match self {
+            Power::Off => 0x00,
+            Power::On => 0x01,
+            Power::Unknown => 0x00,
         }
     }
 }
@@ -62,6 +73,19 @@ impl From<u8> for Mode {
     }
 }
 
+impl Mode {
+    fn encode(&self) -> u8 {
+        match self {
+            Mode::Heat    => 0x01,
+            Mode::Dry     => 0x02,
+            Mode::Cool    => 0x03,
+            Mode::Fan     => 0x07,
+            Mode::Auto    => 0x08,
+            Mode::Unknown => 0x00,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum Fan {
     Auto,
@@ -83,6 +107,20 @@ impl From<u8> for Fan {
             5 => Fan::F3,
             6 => Fan::F4,
             _ => Fan::Unknown,
+        }
+    }
+}
+
+impl Fan {
+    fn encode(&self) -> u8 {
+        match self {
+            Fan::Auto    => 0x00,
+            Fan::Quiet   => 0x01,
+            Fan::F1      => 0x02,
+            Fan::F2      => 0x03,
+            Fan::F3      => 0x05,
+            Fan::F4      => 0x06,
+            Fan::Unknown => 0x00,
         }
     }
 }
@@ -114,6 +152,21 @@ impl From<u8> for Vane {
     }
 }
 
+impl Vane {
+    fn encode(&self) -> u8 {
+        match self {
+            Vane::Auto    => 0x00,
+            Vane::V1      => 0x01,
+            Vane::V2      => 0x02,
+            Vane::V3      => 0x03,
+            Vane::V4      => 0x04,
+            Vane::V5      => 0x05,
+            Vane::Swing   => 0x07,
+            Vane::Unknown => 0x00,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum WideVane {
     LL,
@@ -137,6 +190,21 @@ impl From<u8> for WideVane {
             0x8 => WideVane::LR,
             0xc => WideVane::Swing,
             _   => WideVane::Unknown,
+        }
+    }
+}
+
+impl WideVane {
+    fn encode(&self) -> u8 {
+        match self {
+            WideVane::LL      => 0x01,
+            WideVane::L       => 0x02,
+            WideVane::Center  => 0x03,
+            WideVane::R       => 0x04,
+            WideVane::RR      => 0x05,
+            WideVane::LR      => 0x08,
+            WideVane::Swing   => 0x0c,
+            WideVane::Unknown => 0x00,
         }
     }
 }
@@ -262,9 +330,6 @@ enum Temperature {
     RoomTempMapped { value: u8 },
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct TenthDegreesC(u8);
-
 impl Temperature {
     fn celsius_tenths(&self) -> TenthDegreesC {
         match self {
@@ -273,6 +338,15 @@ impl Temperature {
             Temperature::RoomTempMapped { value } => TenthDegreesC((value + 10) * 10),
         }
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TenthDegreesC(u8);
+
+impl TenthDegreesC {
+    fn encode_as_setpoint_mapped(&self) -> u8 { 0x1f - self.0 / 10 }
+    fn encode_as_room_temp_mapped(&self) -> u8 { self.0 / 10 - 10 }
+    fn encode_as_half_deg_plus_offset(&self) -> u8 { self.0 / 5 + 128 }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -352,6 +426,87 @@ named!(data<ParsedData>, alt!(
     )
 );
 
+struct ControlPacketData {
+    power: Option<Power>,
+    mode: Option<Mode>,
+    temp: Option<Temperature>,
+    fan: Option<Fan>,
+    vane: Option<Vane>,
+    widevane: Option<WideVane>,
+}
+
+// "Control packet" data: sends desired settings to the device
+//
+// 16-bytes:
+//
+//  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+// ID  F0  F1  PW  MO  TM  FA  VA  xx  xx  xx  xx  xx  WV  T2  xx
+//
+// ID: 0x01
+// F0: Flag byte 0, set bits indicate presence of power/mode/temp/fan/vane values
+// F1: Flag byte 1, set bits indicate presence of widevane value
+// PW: Power
+// MO: Mode
+// TM: Temperature (as 'setpoint mapped' value)
+// FA: Fan
+// VA: Vane
+// WV: Wide Vane
+// T2: Temperature (as half-degrees c + offset)
+impl<'a> ControlPacketData {
+    fn write(&self, data: &'a mut [u8; 16]) -> &'a [u8; 16] {
+        data[0] = 0x01; // Unknown constant in the protocol
+        self.write_flags(&mut data[1..3]);
+
+        data[3] = match self.power {
+            Some(ref power) => power.encode(),
+            _ => 0x00,
+        };
+
+        data[4] = match self.mode {
+            Some(ref mode) => mode.encode(),
+            _ => 0x00,
+        };
+
+        data[5] = match self.temp {
+            Some(ref temp) => temp.celsius_tenths().encode_as_setpoint_mapped(),
+            _ => 0x00,
+        };
+
+        data[6] = match self.fan {
+            Some(ref fan) => fan.encode(),
+            _ => 0x00,
+        };
+
+        data[7] = match self.vane {
+            Some(ref vane) => vane.encode(),
+            _ => 0x00,
+        };
+
+        data[13] = match self.widevane {
+            Some(ref widevane) => widevane.encode(),
+            _ => 0x00,
+        };
+
+        data[14] = match self.temp {
+            Some(ref temp) => temp.celsius_tenths().encode_as_half_deg_plus_offset(),
+            _ => 0x00,
+        };
+
+        data
+    }
+
+    fn write_flags(&self, data: &mut [u8]) {
+        data[0] = 0x00u8 |
+            (match self.power { Some(Power::Unknown) => 0, Some(_) => 0b00000001, _ => 0 }) |
+            (match self.mode  { Some(Mode::Unknown)  => 0, Some(_) => 0b00000010, _ => 0 }) |
+            (match self.temp  {                            Some(_) => 0b00000100, _ => 0 }) |
+            (match self.fan   { Some(Fan::Unknown)   => 0, Some(_) => 0b00001000, _ => 0 }) |
+            (match self.vane  { Some(Vane::Unknown)  => 0, Some(_) => 0b00010000, _ => 0 });
+        data[1] = 0x00u8 |
+            (match self.widevane { Some(WideVane::Unknown) => 0, Some(_) => 0b00000001, _ => 0 });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +580,77 @@ mod tests {
             }))
         );
 
+    }
+
+    #[test]
+    fn control_packet_data_flags_test() {
+        let mut slice = [0x00, 0x00];
+        let mut packet = ControlPacketData {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        };
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00011111, slice[0]);
+        assert_eq!(0b00000001, slice[1]);
+
+        packet.widevane = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00011111, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        packet.power = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00011110, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        packet.mode = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00011100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        packet.fan = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00010100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        packet.vane = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00000100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        packet.temp = None;
+        packet.write_flags(&mut slice);
+        assert_eq!(0b00000000, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+    }
+
+    #[test]
+    fn control_packet_data_write_test() {
+        let mut slice = [0x00; 16];
+        let packet = ControlPacketData {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        };
+
+        let result = packet.write(&mut slice);
+        assert_eq!(result[0], 0x01, "must start with 0x01");
+        assert_eq!(result[1], 0b00011111, "flags.0");
+        assert_eq!(result[2], 0b00000001, "flags.1");
+        assert_eq!(result[3], 0x01, "power");
+        assert_eq!(result[4], 0x08, "mode");
+        assert_eq!(result[5], 0x0a, "temp mapped");
+        assert_eq!(result[6], 0x00, "fan");
+        assert_eq!(result[7], 0x07, "vane");
+        assert_eq!(result[8..13], [0x00; 5], "NULL");
+        assert_eq!(result[13], 0x01, "widevane");
+        assert_eq!(result[14], 0xaa, "temp as half-deg offset");
     }
 }
