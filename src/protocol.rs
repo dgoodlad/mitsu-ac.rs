@@ -31,6 +31,22 @@ impl From<u8> for PacketType {
     }
 }
 
+impl PacketType {
+    fn encode(&self) -> u8 {
+        match self {
+            PacketType::SetRequest      => 0x41,
+            PacketType::GetInfoRequest  => 0x42,
+            PacketType::ConnectRequest  => 0x5a,
+
+            PacketType::SetResponse     => 0x61,
+            PacketType::GetInfoResponse => 0x62,
+            PacketType::ConnectResponse => 0x7a,
+
+            PacketType::Unknown         => 0xff,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum Power {
     On,
@@ -368,7 +384,7 @@ impl TenthDegreesC {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ParsedData {
+enum GetInfoData {
     Settings {
         power: Power,
         mode: Mode,
@@ -383,8 +399,8 @@ enum ParsedData {
     Unknown,
 }
 
-named!(settings_data<ParsedData>, do_parse!(
-    tag!(&[0x02]) >>
+named!(settings_data<GetInfoData>, do_parse!(
+    tag!(&[InfoType::Settings as u8]) >>
     take!(2) >>
     power: map!(be_u8, Power::from) >>
     mode_and_isee: bits!(tuple!(
@@ -404,13 +420,13 @@ named!(settings_data<ParsedData>, do_parse!(
         (_, s) => Setpoint(s),
     }) >>
     take!(4) >>
-    (ParsedData::Settings {
+    (GetInfoData::Settings {
         power, mode, fan, vane, widevane, setpoint, isee
     })
 ));
 
-named!(room_temp_data<ParsedData>, do_parse!(
-    tag!(&[0x03]) >>
+named!(room_temp_data<GetInfoData>, do_parse!(
+    tag!(&[InfoType::RoomTemp as u8]) >>
     take!(2) >>
     mapped: map!(be_u8, |b| Temperature::RoomTempMapped { value: b }) >>
     take!(2) >>
@@ -420,26 +436,26 @@ named!(room_temp_data<ParsedData>, do_parse!(
         (Temperature::HalfDegreesCPlusOffset { value: 0 }, t) => t,
         (t, _) => t,
     }) >>
-    (ParsedData::RoomTemperature { temperature })
+    (GetInfoData::RoomTemperature { temperature })
 ));
 
-named!(timer_data<ParsedData>, do_parse!(
-    tag!(&[0x05]) >>
-    (ParsedData::Unknown)
+named!(timer_data<GetInfoData>, do_parse!(
+    tag!(&[InfoType::Timers as u8]) >>
+    (GetInfoData::Unknown)
 ));
 
 // TODO test the status info packet
-named!(status_data<ParsedData>, do_parse!(
-    tag!(&[0x06]) >>
+named!(status_data<GetInfoData>, do_parse!(
+    tag!(&[InfoType::Status as u8]) >>
     take!(2) >>
     compressor_frequency: be_u8 >>
     operating: be_u8 >>
-    (ParsedData::Status { compressor_frequency, operating })
+    (GetInfoData::Status { compressor_frequency, operating })
 ));
 
-named!(unknown_data<ParsedData>, do_parse!((ParsedData::Unknown)));
+named!(unknown_data<GetInfoData>, do_parse!((GetInfoData::Unknown)));
 
-named!(data<ParsedData>, alt!(
+named!(data<GetInfoData>, alt!(
     settings_data |
     room_temp_data |
     timer_data |
@@ -600,7 +616,7 @@ mod tests {
     #[test]
     fn settings_data_test() {
         assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, ParsedData::Settings {
+            Ok((EMPTY, GetInfoData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0x94 }),
@@ -612,7 +628,7 @@ mod tests {
             }))
         );
         assert_eq!(data(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, ParsedData::Settings {
+            Ok((EMPTY, GetInfoData::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Setpoint(Temperature::HalfDegreesCPlusOffset { value: 0xa0 }),
@@ -627,7 +643,7 @@ mod tests {
     #[test]
     fn temperature_data_test() {
         assert_eq!(data(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, ParsedData::RoomTemperature {
+            Ok((EMPTY, GetInfoData::RoomTemperature {
                 temperature: Temperature::HalfDegreesCPlusOffset{ value: 0xaa },
             }))
         );
