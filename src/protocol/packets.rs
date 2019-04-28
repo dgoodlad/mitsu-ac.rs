@@ -52,7 +52,7 @@ impl<T: PacketType, D: PacketData<T>> Encodable for Packet<T, D> {
             into[4] = data_len as u8;
             self.data.encode(&mut into[5..(data_len + 5)])?;
             // Checksum
-            into[(data_len + 5)] = into[1..(data_len + 5)].iter().fold(0u32, |acc,b| acc + *b as u32) as u8;
+            into[(data_len + 5)] = 0xfc - (into[0..(data_len + 5)].iter().fold(0u32, |acc,b| acc + *b as u32) as u8);
             Ok(into)
         }
     }
@@ -260,9 +260,8 @@ enum ConnectResponse {}
 impl PacketType for ConnectResponse { const ID: u8 = 0x7a; }
 
 named!(checksum<u8>, do_parse!(
-    tag!(&[0xfc]) >>
-    length: peek!(do_parse!(take!(1) >> tag!(&[0x01, 0x30]) >> len: map!(be_u8, |b| b + 4) >> (len as usize))) >>
-    calculated: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| i as u8) >>
+    length: peek!(do_parse!(tag!(&[0xfc]) >> take!(1) >> tag!(&[0x01, 0x30]) >> len: map!(be_u8, |b| b + 5) >> (len as usize))) >>
+    calculated: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
     received: verify!(be_u8, |b| b == calculated) >>
     (received)
 ));
@@ -292,7 +291,7 @@ mod tests {
                    Ok(&[0xfc, 0x42, 0x01, 0x30, 0x10,
                         0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                        0x85,
+                        0x7b,
                         ][0..22]));
         assert_eq!(Ok(packet), Packet::parse(&buf))
     }
@@ -317,7 +316,7 @@ mod tests {
                         0x01,
                         0xaa,
                         0x00,
-                        0x68,
+                        0x98,
                    ][0..22])
         );
         assert_eq!(Ok(packet), Packet::parse(&buf))
@@ -328,7 +327,7 @@ mod tests {
         let buf: &[u8; 22] = &[0xfc, 0x61, 0x01, 0x30, 0x10,
                                0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07,
                                0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00,
-                               0x53];
+                               0xad];
         assert_eq!(Packet::parse(buf), Ok(Packet::new(SetResponseData)))
     }
 }
