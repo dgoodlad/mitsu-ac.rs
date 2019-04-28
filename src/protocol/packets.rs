@@ -8,7 +8,7 @@ trait PacketType {
 }
 
 trait PacketData<T: PacketType> : Encodable + Sized {
-    fn length(&self) -> usize;
+    const LENGTH: usize = 0x10;
     fn decode(from: &[u8]) -> IResult<&[u8], Self>;
 }
 
@@ -40,7 +40,7 @@ impl<T: PacketType, D: PacketData<T>> Packet<T, D> {
 
 impl<T: PacketType, D: PacketData<T>> Encodable for Packet<T, D> {
     fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        let data_len = self.data.length();
+        let data_len = D::LENGTH;
         if into.len() != 5 + data_len + 1 {
             //Ok(into)
             Err(EncodingError)
@@ -88,7 +88,6 @@ struct SetRequestData {
 // WV: Wide Vane
 // T2: Temperature (as half-degrees c + offset)
 impl PacketData<SetRequest> for SetRequestData {
-    fn length(&self) -> usize { 0x10 }
     fn decode(from: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(from,
             tag!(&[0x01]) >>
@@ -142,7 +141,7 @@ impl SetRequestData {
 
 impl Encodable for SetRequestData {
     fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != self.length() {
+        if into.len() != Self::LENGTH {
             Err(EncodingError)
         } else {
             into[0] = 0x01;
@@ -200,7 +199,6 @@ impl From<u8> for InfoType {
 #[derive(Debug, Eq, PartialEq)]
 struct GetInfoRequestData(InfoType);
 impl PacketData<GetInfoRequest> for GetInfoRequestData {
-    fn length(&self) -> usize { 0x10 }
     fn decode(from: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(from,
             info_type: map!(be_u8, InfoType::from) >>
@@ -211,7 +209,7 @@ impl PacketData<GetInfoRequest> for GetInfoRequestData {
 
 impl Encodable for GetInfoRequestData {
     fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != self.length() {
+        if into.len() != Self::LENGTH {
             Err(EncodingError)
         } else {
             into[0] = self.0 as u8;
@@ -235,7 +233,8 @@ impl ConnectRequestData {
 }
 
 impl PacketData<ConnectRequest> for ConnectRequestData {
-    fn length(&self) -> usize { 0x02 }
+    const LENGTH: usize = 0x02;
+
     fn decode(from: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(from,
             tag!(&[Self::BYTE1, Self::BYTE2]) >>
@@ -246,7 +245,7 @@ impl PacketData<ConnectRequest> for ConnectRequestData {
 
 impl Encodable for ConnectRequestData {
     fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != self.length() {
+        if into.len() != Self::LENGTH {
             Err(EncodingError)
         } else {
             into[0] = Self::BYTE1;
@@ -264,8 +263,6 @@ impl PacketType for SetResponse { const ID: u8 = 0x61; }
 struct SetResponseData;
 
 impl PacketData<SetResponse> for SetResponseData {
-    fn length(&self) -> usize { 0x10 }
-
     fn decode(from: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(from,
             take!(16) >>
@@ -368,9 +365,6 @@ impl GetInfoResponseData {
 }
 
 impl PacketData<GetInfoResponse> for GetInfoResponseData {
-    fn length(&self) -> usize { 0x10 }
-
-    // TODO
     fn decode(input: &[u8]) -> IResult<&[u8], Self> {
         alt!(input,
              Self::decode_settings |
