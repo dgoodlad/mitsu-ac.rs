@@ -7,20 +7,33 @@ trait PacketType {
     const ID: u8;
 }
 
-trait PacketData<T: PacketType> : Encodable {
+trait PacketData<T: PacketType> : Encodable + Sized {
     fn length(&self) -> usize;
+    fn decode(from: &[u8]) -> IResult<&[u8], Self>;
 }
 
+#[derive(Debug, Eq, PartialEq)]
 struct Packet<T: PacketType, D: PacketData<T>> {
     _packet_type: PhantomData<T>,
     data: D,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct DecodingError;
+
 impl<T: PacketType, D: PacketData<T>> Packet<T, D> {
-    fn new(data: D) -> Packet<T, D> {
+    fn new(data: D) -> Self {
         Packet {
             _packet_type: PhantomData,
             data: data,
+        }
+    }
+
+    // TODO should we really abstract away from nom here, or just return an IResult?
+    fn parse(input: &[u8]) -> Result<Self, DecodingError> {
+        match parse_packet_type(input, D::decode) {
+            Ok((rest, packet)) => Ok(packet),
+            Err(_) => Err(DecodingError),
         }
     }
 }
@@ -43,7 +56,7 @@ impl<T: PacketType, D: PacketData<T>> Encodable for Packet<T, D> {
     }
 }
 
-enum SetRequest {}
+struct SetRequest;
 impl PacketType for SetRequest { const ID: u8 = 0x41; }
 
 struct SetRequestData {
@@ -72,6 +85,31 @@ struct SetRequestData {
 // T2: Temperature (as half-degrees c + offset)
 impl PacketData<SetRequest> for SetRequestData {
     fn length(&self) -> usize { 0x10 }
+    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(from,
+            tag!(&[0x01]) >>
+            flags: bits!(do_parse!(
+                take_bits!(u8, 3) >>
+                vane: take_bits!(u8, 1) >>
+                fan: take_bits!(u8, 1) >>
+                temp: take_bits!(u8, 1) >>
+                mode: take_bits!(u8, 1) >>
+                power: take_bits!(u8, 1) >>
+                take_bits!(u8, 7) >>
+                widevane: take_bits!(u8, 1) >>
+                ((power, mode, temp, fan, vane, widevane))
+            )) >>
+            // TODO parse the actual fields into Options
+            (SetRequestData {
+                power: None,
+                mode: None,
+                temp: None,
+                fan: None,
+                vane: None,
+                widevane: None,
+            })
+        )
+    }
 }
 
 impl SetRequestData {
@@ -111,7 +149,8 @@ impl Encodable for SetRequestData {
     }
 }
 
-enum GetInfoRequest {}
+#[derive(Debug, Eq, PartialEq)]
+struct GetInfoRequest;
 impl PacketType for GetInfoRequest { const ID: u8 = 0x42; }
 
 #[repr(u8)]
@@ -119,10 +158,11 @@ impl PacketType for GetInfoRequest { const ID: u8 = 0x42; }
 enum InfoType {
     Settings     = 0x02,
     RoomTemp     = 0x03,
-    Unknown      = 0x04,
+    Type4        = 0x04,
     Timers       = 0x05,
     Status       = 0x06,
     MaybeStandby = 0x09,
+    Unknown      = 0xff,
 }
 
 impl InfoType {
@@ -131,9 +171,30 @@ impl InfoType {
     }
 }
 
+impl From<u8> for InfoType {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0x02 => InfoType::Settings,
+            0x03 => InfoType::RoomTemp,
+            0x04 => InfoType::Type4,
+            0x05 => InfoType::Timers,
+            0x06 => InfoType::Status,
+            0x09 => InfoType::MaybeStandby,
+            _ => InfoType::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 struct GetInfoRequestData(InfoType);
 impl PacketData<GetInfoRequest> for GetInfoRequestData {
     fn length(&self) -> usize { 0x10 }
+    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(from,
+            info_type: map!(be_u8, InfoType::from) >>
+            (GetInfoRequestData(info_type))
+        )
+    }
 }
 
 impl Encodable for GetInfoRequestData {
@@ -148,17 +209,56 @@ impl Encodable for GetInfoRequestData {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum ConnectRequest {}
 impl PacketType for ConnectRequest { const ID: u8 = 0x5a; }
 
+#[derive(Debug, Eq, PartialEq)]
 enum SetResponse {}
 impl PacketType for SetResponse { const ID: u8 = 0x61; }
+
+#[derive(Debug, Eq, PartialEq)]
+struct SetResponseData;
+impl SetResponseData {
+    fn decode(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input, take!(16) >> (Self))
+    }
+}
+
+impl PacketData<SetResponse> for SetResponseData {
+    fn length(&self) -> usize { 0x10 }
+    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(from,
+            take!(16) >>
+            (SetResponseData)
+        )
+    }
+}
+
+impl Encodable for SetResponseData {
+    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        Ok(into)
+    }
+}
 
 enum GetInfoResponse {}
 impl PacketType for GetInfoResponse { const ID: u8 = 0x62; }
 
 enum ConnectResponse {}
 impl PacketType for ConnectResponse { const ID: u8 = 0x7a; }
+
+fn parse_packet_type<T, D>(input: &[u8], d: fn(&[u8]) -> IResult<&[u8], D>) -> IResult<&[u8], Packet<T, D>> where T: PacketType, D: PacketData<T> {
+    do_parse!(input,
+        tag!(&[0xfc,
+               T::ID,
+               0x01,
+               0x30]) >>
+        length: be_u8 >>
+        data: flat_map!(take!(length), d) >>
+        _checksum: be_u8 >>
+        (Packet::new(data))
+    )
+}
 
 mod tests {
     use super::*;
@@ -198,5 +298,14 @@ mod tests {
                         0x00,
                    ][0..22])
         );
+    }
+
+    #[test]
+    fn packet_type_parser_test() {
+        let buf: &[u8; 22] = &[0xfc, 0x61, 0x01, 0x30, 0x10,
+                               0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07,
+                               0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00,
+                               0x00];
+        assert_eq!(Packet::parse(buf), Ok(Packet::new(SetResponseData)))
     }
 }
