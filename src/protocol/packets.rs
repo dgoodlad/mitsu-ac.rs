@@ -1,5 +1,5 @@
 use nom::*;
-use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, TenthDegreesC};
+use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee, TenthDegreesC};
 use super::encoding::*;
 use core::marker::PhantomData;
 
@@ -262,14 +262,10 @@ impl PacketType for SetResponse { const ID: u8 = 0x61; }
 
 #[derive(Debug, Eq, PartialEq)]
 struct SetResponseData;
-impl SetResponseData {
-    fn decode(input: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(input, take!(16) >> (Self))
-    }
-}
 
 impl PacketData<SetResponse> for SetResponseData {
     fn length(&self) -> usize { 0x10 }
+
     fn decode(from: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(from,
             take!(16) >>
@@ -284,8 +280,114 @@ impl Encodable for SetResponseData {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum GetInfoResponse {}
 impl PacketType for GetInfoResponse { const ID: u8 = 0x62; }
+
+#[derive(Debug, PartialEq, Eq)]
+enum GetInfoResponseData {
+    Settings {
+        power: Power,
+        mode: Mode,
+        setpoint: Temperature,
+        fan: Fan,
+        vane: Vane,
+        widevane: WideVane,
+        isee: ISee,
+    },
+    RoomTemperature { temperature: Temperature },
+    Status { compressor_frequency: u8, operating: u8 },
+    Unknown,
+}
+
+impl GetInfoResponseData {
+    fn decode_settings(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            tag!(&[InfoType::Settings as u8]) >>
+            take!(2) >>
+            power: map!(be_u8, Power::from) >>
+            mode_and_isee: bits!(tuple!(
+                take_bits!(u8, 4),
+                map!(take_bits!(u8, 1), ISee::from),
+                map!(take_bits!(u8, 3), Mode::from))) >>
+            isee: value!(mode_and_isee.1) >>
+            mode: value!(mode_and_isee.2) >>
+            setpoint_mapped: map!(be_u8, |b| Temperature::SetpointMapped { value: b })>>
+            fan: map!(be_u8, Fan::from) >>
+            vane: map!(be_u8, Vane::from) >>
+            take!(2) >>
+            widevane: map!(be_u8, WideVane::from) >>
+            setpoint_half_deg: map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b }) >>
+            setpoint: value!(match (setpoint_mapped, setpoint_half_deg) {
+                (s, Temperature::HalfDegreesCPlusOffset { value: 0 }) => s,
+                (_, s) => s,
+            }) >>
+            take!(4) >>
+            (GetInfoResponseData::Settings {
+                power, mode, fan, vane, widevane, setpoint, isee
+            })
+        )
+    }
+
+    fn decode_room_temp(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            tag!(&[InfoType::RoomTemp as u8]) >>
+            take!(2) >>
+            mapped: map!(be_u8, |b| Temperature::RoomTempMapped { value: b }) >>
+            take!(2) >>
+            half_deg: map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b }) >>
+            take!(9) >>
+            temperature: value!(match (half_deg, mapped) {
+                (Temperature::HalfDegreesCPlusOffset { value: 0 }, t) => t,
+                (t, _) => t,
+            }) >>
+            (GetInfoResponseData::RoomTemperature { temperature })
+        )
+    }
+
+    fn decode_timer(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            tag!(&[InfoType::Timers as u8]) >>
+            (GetInfoResponseData::Unknown)
+        )
+    }
+
+    fn decode_status(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            tag!(&[InfoType::Status as u8]) >>
+            take!(2) >>
+            compressor_frequency: be_u8 >>
+            operating: be_u8 >>
+            (GetInfoResponseData::Status { compressor_frequency, operating })
+        )
+    }
+
+    fn decode_unknown(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input, (GetInfoResponseData::Unknown))
+    }
+}
+
+impl PacketData<GetInfoResponse> for GetInfoResponseData {
+    fn length(&self) -> usize { 0x10 }
+
+    // TODO
+    fn decode(input: &[u8]) -> IResult<&[u8], Self> {
+        alt!(input,
+             Self::decode_settings |
+             Self::decode_room_temp |
+             Self::decode_timer |
+             Self::decode_status |
+             Self::decode_unknown
+        )
+    }
+}
+
+impl Encodable for GetInfoResponseData {
+    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        // TODO
+        Ok(into)
+    }
+}
 
 enum ConnectResponse {}
 impl PacketType for ConnectResponse { const ID: u8 = 0x7a; }
