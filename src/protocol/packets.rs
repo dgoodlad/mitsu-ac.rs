@@ -1,5 +1,5 @@
 use nom::*;
-use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane};
+use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, TenthDegreesC};
 use super::encoding::*;
 use core::marker::PhantomData;
 
@@ -173,5 +173,30 @@ mod tests {
                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                         0x00,
                         ][0..22]))
+    }
+
+    #[test]
+    fn set_request_test() {
+        let mut buf: [u8; 22] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let packet = Packet::new(SetRequestData {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        });
+        let result = packet.encode(&mut buf);
+        assert_eq!(result,
+                   Ok(&[0xfc, 0x41, 0x01, 0x30, 0x10,
+                        0x01, 0x1f, 0x1,
+                        0x01, 0x08, 0x0a, 0x00, 0x07,
+                        0x00, 0x00, 0x00, 0x00, 0x00,
+                        0x01,
+                        0xaa,
+                        0x00,
+                        0x00,
+                   ][0..22])
+        );
     }
 }

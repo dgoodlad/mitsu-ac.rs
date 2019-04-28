@@ -223,7 +223,7 @@ impl Temperature {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct TenthDegreesC(u8);
+pub struct TenthDegreesC(pub u8);
 
 impl TenthDegreesC {
     pub fn encode_as_setpoint_mapped(&self) -> u8 { 0x1f - self.0 / 10 }
