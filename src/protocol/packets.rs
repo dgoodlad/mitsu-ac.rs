@@ -58,9 +58,11 @@ impl<T: PacketType, D: PacketData<T>> Encodable for Packet<T, D> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct SetRequest;
 impl PacketType for SetRequest { const ID: u8 = 0x41; }
 
+#[derive(Debug, PartialEq, Eq)]
 struct SetRequestData {
     power: Option<Power>,
     mode: Option<Mode>,
@@ -101,14 +103,22 @@ impl PacketData<SetRequest> for SetRequestData {
                 widevane: take_bits!(u8, 1) >>
                 ((power, mode, temp, fan, vane, widevane))
             )) >>
-            // TODO parse the actual fields into Options
+            power: cond!(flags.0 == 1, map!(be_u8, Power::from)) >>
+            mode: cond!(flags.1 == 1, map!(be_u8, Mode::from)) >>
+            _temp_mapped: cond!(flags.2 == 1, map!(be_u8, |b| Temperature::SetpointMapped { value: b }))>>
+            fan: cond!(flags.3 == 1, map!(be_u8, Fan::from)) >>
+            vane: cond!(flags.4 == 1, map!(be_u8, Vane::from)) >>
+            take!(5) >>
+            widevane: cond!(flags.5 == 1, map!(be_u8, WideVane::from)) >>
+            temp: cond!(flags.2 == 1, map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b })) >>
+            take!(1) >>
             (SetRequestData {
-                power: None,
-                mode: None,
-                temp: None,
-                fan: None,
-                vane: None,
-                widevane: None,
+                power,
+                mode,
+                temp,
+                fan,
+                vane,
+                widevane,
             })
         )
     }
@@ -310,6 +320,7 @@ mod tests {
                         0x68,
                    ][0..22])
         );
+        assert_eq!(Ok(packet), Packet::parse(&buf))
     }
 
     #[test]
