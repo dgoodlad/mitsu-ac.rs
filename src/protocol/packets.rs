@@ -225,6 +225,37 @@ impl Encodable for GetInfoRequestData {
 enum ConnectRequest {}
 impl PacketType for ConnectRequest { const ID: u8 = 0x5a; }
 
+struct ConnectRequestData;
+
+impl ConnectRequestData {
+    // We have no idea what these magic values mean or if we can use anything
+    // else, but they seem to do the trick...
+    const BYTE1: u8 = 0xca;
+    const BYTE2: u8 = 0x01;
+}
+
+impl PacketData<ConnectRequest> for ConnectRequestData {
+    fn length(&self) -> usize { 0x02 }
+    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(from,
+            tag!(&[Self::BYTE1, Self::BYTE2]) >>
+            (ConnectRequestData)
+        )
+    }
+}
+
+impl Encodable for ConnectRequestData {
+    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        if into.len() != self.length() {
+            Err(EncodingError)
+        } else {
+            into[0] = Self::BYTE1;
+            into[1] = Self::BYTE2;
+            Ok(into)
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 enum SetResponse {}
 impl PacketType for SetResponse { const ID: u8 = 0x61; }
@@ -282,6 +313,18 @@ fn parse_packet_type<T, D>(input: &[u8], d: fn(&[u8]) -> IResult<&[u8], D>) -> I
 
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_request_test() {
+        let mut buf: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let packet = Packet::new(ConnectRequestData);
+        assert_eq!(packet.encode(&mut buf),
+                   Ok(&[0xfc, 0x5a, 0x01, 0x30, 0x02,
+                        0xca, 0x01,
+                        0xa8,
+                   ][0..8])
+        )
+    }
 
     #[test]
     fn get_info_request_test() {
