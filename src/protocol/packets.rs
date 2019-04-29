@@ -410,6 +410,8 @@ fn parse_packet_type<T, D>(input: &[u8], d: fn(&[u8]) -> IResult<&[u8], D>) -> I
 mod tests {
     use super::*;
 
+    const EMPTY: &[u8] = &[];
+
     #[test]
     fn connect_request_test() {
         let mut buf: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -433,6 +435,53 @@ mod tests {
                         0x7b,
                         ][0..22]));
         assert_eq!(Ok(packet), Packet::parse(&buf))
+    }
+
+    #[test]
+    fn set_request_flags_test() {
+        let mut slice = [0x00, 0x00];
+        let mut data = SetRequestData {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        };
+
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00011111, slice[0]);
+        assert_eq!(0b00000001, slice[1]);
+
+        data.widevane = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00011111, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        data.power = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00011110, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        data.mode = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00011100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        data.fan = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00010100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        data.vane = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00000100, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
+
+        data.temp = None;
+        data.encode_flags(&mut slice).unwrap();
+        assert_eq!(0b00000000, slice[0]);
+        assert_eq!(0b00000000, slice[1]);
     }
 
     #[test]
@@ -468,5 +517,50 @@ mod tests {
                                0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00,
                                0xad];
         assert_eq!(Packet::parse(buf), Ok(Packet::new(SetResponseData)))
+    }
+
+    #[test]
+    fn decode_info_settings_test() {
+        assert_eq!(GetInfoResponseData::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponseData::Settings {
+                power: Power::On,
+                mode: Mode::Heat,
+                setpoint: Temperature::HalfDegreesCPlusOffset { value: 0x94 },
+                fan: Fan::Auto,
+                vane: Vane::Swing,
+                widevane: WideVane::Center,
+                isee: ISee::Off,
+
+            }))
+        );
+
+        assert_eq!(GetInfoResponseData::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponseData::Settings {
+                power: Power::On,
+                mode: Mode::Heat,
+                setpoint: Temperature::HalfDegreesCPlusOffset { value: 0xa0 },
+                fan: Fan::Auto,
+                vane: Vane::Swing,
+                widevane: WideVane::Center,
+                isee: ISee::Off,
+            }))
+        );
+    }
+
+    #[test]
+    fn decode_info_temperature_test() {
+        // When the half-degrees value is present in byte 6, use it
+        assert_eq!(GetInfoResponseData::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
+                temperature: Temperature::HalfDegreesCPlusOffset{ value: 0xaa },
+            }))
+        );
+        // When the half-degrees value is missing, test that we fall back to the
+        // lower-res "mapped" value from byte 3
+        assert_eq!(GetInfoResponseData::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
+                temperature: Temperature::RoomTempMapped{ value: 0x0b },
+            }))
+        );
     }
 }
