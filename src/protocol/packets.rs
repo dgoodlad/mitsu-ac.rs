@@ -3,11 +3,12 @@ use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 use super::encoding::*;
 
 #[derive(Debug, Eq, PartialEq)]
-struct DecodingError;
+pub struct DecodingError;
 
+/// A type of packet
 #[repr(u8)]
 #[derive(Debug, Eq, PartialEq)]
-enum PacketTypeId {
+pub enum PacketTypeId {
     SetRequest      = 0x41,
     GetInfoRequest  = 0x42,
     ConnectRequest  = 0x5a,
@@ -42,7 +43,7 @@ named!(checksum<u8>, do_parse!(
     (received)
 ));
 
-enum ChecksummedPacket<'a> {
+pub enum ChecksummedPacket<'a> {
     Matched {
         checksum: u8,
         packet_type_id: PacketTypeId,
@@ -88,7 +89,7 @@ impl<'a> ChecksummedPacket<'a> {
         }
     }
 
-    fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
+    pub fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
         match self {
             ChecksummedPacket::Matched { checksum, packet_type_id, raw_bytes } => {
                 // TODO define an error type to handle this "mismatched types" case
@@ -115,7 +116,7 @@ impl<'a> ChecksummedPacket<'a> {
         }
     }
 
-    fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: Packet {
+    pub fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: Packet {
         buf[0] = 0xfc;
         buf[1] = T::TYPE as u8;
         buf[2] = 0x01;
@@ -128,7 +129,8 @@ impl<'a> ChecksummedPacket<'a> {
     }
 }
 
-trait Packet: Sized {
+/// A single packet of a particular type (`PacketTypeId`)
+pub trait Packet: Sized {
     const TYPE: PacketTypeId;
 
     /// Length in bytes of the data associated with this type of packet
@@ -143,34 +145,51 @@ trait Packet: Sized {
     fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError>;
 }
 
+/// Sets one or more of the device's settings:
+///
+/// * `power`
+/// * `mode`
+/// * `setpoint`
+/// * `fan`
+/// * `vane`
+/// * `widevane`
+///
+/// Each field is an `Option`; if set to `None`, the device's current setting
+/// will be left unchanged.
+///
+/// # Packet structure
+///
+/// | Byte | Description |
+/// |------|---|
+/// |    0 | `0x01` - an unknown constant |
+/// |    1 | Flag byte 0, set bits indicate presence of power/mode/temp/fan/vane values |
+/// |    2 | Flag byte 1, set bits indicate presence of widevane value |
+/// |    3 | Power |
+/// |    4 | Mode |
+/// |    5 | Temperature (as 'setpoint mapped' value) |
+/// |    6 | Fan |
+/// |    7 | Vane |
+/// |    8 | Unused |
+/// |    9 | Unused |
+/// |   10 | Unused |
+/// |   11 | Unused |
+/// |   12 | Unused |
+/// |   13 | Wide Vane |
+/// |   14 | Temperature (as half-degrees c + offset) |
+/// |   15 | Unused |
 #[derive(Debug, PartialEq, Eq)]
-struct SetRequest {
-    power: Option<Power>,
-    mode: Option<Mode>,
-    temp: Option<Temperature>,
-    fan: Option<Fan>,
-    vane: Option<Vane>,
-    widevane: Option<WideVane>,
+pub struct SetRequest {
+    pub power: Option<Power>,
+    pub mode: Option<Mode>,
+    pub temp: Option<Temperature>,
+    pub fan: Option<Fan>,
+    pub vane: Option<Vane>,
+    pub widevane: Option<WideVane>,
 }
 
 impl Packet for SetRequest {
     const TYPE: PacketTypeId = PacketTypeId::SetRequest;
 
-    // 16 bytes:
-    //
-    //  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
-    // ID  F0  F1  PW  MO  TM  FA  VA  xx  xx  xx  xx  xx  WV  T2  xx
-    //
-    // ID: 0x01
-    // F0: Flag byte 0, set bits indicate presence of power/mode/temp/fan/vane values
-    // F1: Flag byte 1, set bits indicate presence of widevane value
-    // PW: Power
-    // MO: Mode
-    // TM: Temperature (as 'setpoint mapped' value)
-    // FA: Fan
-    // VA: Vane
-    // WV: Wide Vane
-    // T2: Temperature (as half-degrees c + offset)
     fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(input,
             tag!(&[0x01]) >>
