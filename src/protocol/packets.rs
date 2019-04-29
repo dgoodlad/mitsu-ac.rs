@@ -1,69 +1,150 @@
 use nom::*;
-use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee, TenthDegreesC};
+use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 use super::encoding::*;
-use core::marker::PhantomData;
-
-trait PacketType {
-    const ID: u8;
-}
-
-trait PacketData<T: PacketType> : Encodable + Sized {
-    const LENGTH: usize = 0x10;
-    fn decode(from: &[u8]) -> IResult<&[u8], Self>;
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct Packet<T: PacketType, D: PacketData<T>> {
-    _packet_type: PhantomData<T>,
-    data: D,
-}
 
 #[derive(Debug, Eq, PartialEq)]
 struct DecodingError;
 
-impl<T: PacketType, D: PacketData<T>> Packet<T, D> {
-    fn new(data: D) -> Self {
-        Packet {
-            _packet_type: PhantomData,
-            data: data,
-        }
-    }
+#[repr(u8)]
+#[derive(Debug, Eq, PartialEq)]
+enum PacketTypeId {
+    SetRequest      = 0x41,
+    GetInfoRequest  = 0x42,
+    ConnectRequest  = 0x5a,
 
-    // TODO should we really abstract away from nom here, or just return an IResult?
-    fn parse(input: &[u8]) -> Result<Self, DecodingError> {
-        match parse_packet_type(input, D::decode) {
-            Ok((rest, packet)) => Ok(packet),
-            Err(_) => Err(DecodingError),
+    SetResponse     = 0x61,
+    GetInfoResponse = 0x62,
+    ConnectResponse = 0x7a,
+
+    Unknown         = 0xff,
+}
+
+impl From<u8> for PacketTypeId {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0x41 => PacketTypeId::SetRequest,
+            0x42 => PacketTypeId::GetInfoRequest,
+            0x5a => PacketTypeId::ConnectRequest,
+
+            0x61 => PacketTypeId::SetResponse,
+            0x62 => PacketTypeId::GetInfoResponse,
+            0x7a => PacketTypeId::ConnectResponse,
+
+            _ => PacketTypeId::Unknown,
         }
     }
 }
 
-impl<T: PacketType, D: PacketData<T>> Encodable for Packet<T, D> {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        let data_len = D::LENGTH;
-        if into.len() != 5 + data_len + 1 {
-            //Ok(into)
-            Err(EncodingError)
+named!(checksum<u8>, do_parse!(
+    length: peek!(do_parse!(tag!(&[0xfc]) >> take!(1) >> tag!(&[0x01, 0x30]) >> len: map!(be_u8, |b| b + 5) >> (len as usize))) >>
+    calculated: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
+    received: verify!(be_u8, |b| b == calculated) >>
+    (received)
+));
+
+enum ChecksummedPacket<'a> {
+    Matched {
+        checksum: u8,
+        packet_type_id: PacketTypeId,
+        raw_bytes: &'a [u8],
+    },
+    Invalid {
+        calculated_checksum: u8,
+        received_checksum: u8,
+        packet_type_id: PacketTypeId,
+        raw_bytes: &'a [u8],
+    },
+}
+
+impl<'a> ChecksummedPacket<'a> {
+    pub fn checksum(raw_bytes: &'a [u8]) -> Result<Self, DecodingError> {
+        let result = do_parse!(raw_bytes,
+            type_id_and_length: peek!(do_parse!(
+                tag!(&[0xfc]) >>
+                type_id: be_u8 >>
+                tag!(&[0x01, 0x30]) >>
+                len: map!(be_u8, |b| b + 5) >>
+                ((type_id, len as usize))
+            )) >>
+            packet_type_id: value!(PacketTypeId::from(type_id_and_length.0)) >>
+            length: value!(type_id_and_length.1) >>
+            calculated_checksum: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
+            received_checksum: be_u8 >>
+            (Self::new(calculated_checksum, received_checksum, packet_type_id, raw_bytes))
+        );
+
+        match result {
+            // TODO don't discard the remaining bytes
+            Ok((_remaining_bytes, packet)) => Ok(packet),
+            Err(_e) => Err(DecodingError),
+        }
+    }
+
+    fn new(calculated_checksum: u8, received_checksum: u8, packet_type_id: PacketTypeId, raw_bytes: &'a [u8]) -> Self {
+        if calculated_checksum == received_checksum {
+            ChecksummedPacket::Matched { checksum: received_checksum, packet_type_id, raw_bytes }
         } else {
-            into[0] = 0xfc;
-            into[1] = T::ID;
-            into[2] = 0x01;
-            into[3] = 0x30;
-            into[4] = data_len as u8;
-            self.data.encode(&mut into[5..(data_len + 5)])?;
-            // Checksum
-            into[(data_len + 5)] = 0xfc - (into[0..(data_len + 5)].iter().fold(0u32, |acc,b| acc + *b as u32) as u8);
-            Ok(into)
+            ChecksummedPacket::Invalid { received_checksum, calculated_checksum, packet_type_id, raw_bytes }
         }
+    }
+
+    fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
+        match self {
+            ChecksummedPacket::Matched { checksum, packet_type_id, raw_bytes } => {
+                // TODO define an error type to handle this "mismatched types" case
+                // We're checking to make sure that the caller is trying to
+                // parse this packet into the right kind of packet based on the type id
+                if packet_type_id != T::TYPE { return Err(DecodingError) }
+
+                let result = do_parse!(raw_bytes,
+                    tag!(&[0xfc]) >>
+                    tag!(&[T::TYPE as u8]) >>
+                    tag!(&[0x01, 0x30]) >>
+                    tag!(&[T::DATALEN as u8]) >>
+                    packet: flat_map!(take!(T::DATALEN), T::decode_data) >>
+                    tag!(&[checksum]) >>
+                    (packet)
+                );
+                match result {
+                    Ok((_, packet)) => Ok(packet),
+                    Err(_e) => Err(DecodingError),
+                }
+            },
+
+            ChecksummedPacket::Invalid {received_checksum: _, calculated_checksum: _, packet_type_id: _, raw_bytes: _} => Err(DecodingError),
+        }
+    }
+
+    fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: Packet {
+        buf[0] = 0xfc;
+        buf[1] = T::TYPE as u8;
+        buf[2] = 0x01;
+        buf[3] = 0x30;
+        buf[4] = T::DATALEN as u8;
+        packet.encode_into(&mut buf[5..(T::DATALEN + 5)])?;
+        buf[T::DATALEN + 5] = 0xfc - (buf[0..(T::DATALEN + 5)].iter().fold(0u32, |acc,b| acc + *b as u32) as u8);
+
+        Ok(buf)
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct SetRequest;
-impl PacketType for SetRequest { const ID: u8 = 0x41; }
+trait Packet: Sized {
+    const TYPE: PacketTypeId;
+
+    /// Length in bytes of the data associated with this type of packet
+    ///
+    /// *Note*: defaulted to 16 bytes but certain types may override it.
+    const DATALEN: usize = 0x10;
+
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self>;
+
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError>;
+}
 
 #[derive(Debug, PartialEq, Eq)]
-struct SetRequestData {
+struct SetRequest {
     power: Option<Power>,
     mode: Option<Mode>,
     temp: Option<Temperature>,
@@ -72,24 +153,26 @@ struct SetRequestData {
     widevane: Option<WideVane>,
 }
 
-// 16 bytes:
-//
-//  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
-// ID  F0  F1  PW  MO  TM  FA  VA  xx  xx  xx  xx  xx  WV  T2  xx
-//
-// ID: 0x01
-// F0: Flag byte 0, set bits indicate presence of power/mode/temp/fan/vane values
-// F1: Flag byte 1, set bits indicate presence of widevane value
-// PW: Power
-// MO: Mode
-// TM: Temperature (as 'setpoint mapped' value)
-// FA: Fan
-// VA: Vane
-// WV: Wide Vane
-// T2: Temperature (as half-degrees c + offset)
-impl PacketData<SetRequest> for SetRequestData {
-    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(from,
+impl Packet for SetRequest {
+    const TYPE: PacketTypeId = PacketTypeId::SetRequest;
+
+    // 16 bytes:
+    //
+    //  0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
+    // ID  F0  F1  PW  MO  TM  FA  VA  xx  xx  xx  xx  xx  WV  T2  xx
+    //
+    // ID: 0x01
+    // F0: Flag byte 0, set bits indicate presence of power/mode/temp/fan/vane values
+    // F1: Flag byte 1, set bits indicate presence of widevane value
+    // PW: Power
+    // MO: Mode
+    // TM: Temperature (as 'setpoint mapped' value)
+    // FA: Fan
+    // VA: Vane
+    // WV: Wide Vane
+    // T2: Temperature (as half-degrees c + offset)
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
             tag!(&[0x01]) >>
             flags: bits!(do_parse!(
                 take_bits!(u8, 3) >>
@@ -111,7 +194,7 @@ impl PacketData<SetRequest> for SetRequestData {
             widevane: cond!(flags.5 == 1, map!(be_u8, WideVane::from)) >>
             temp: cond!(flags.2 == 1, map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b })) >>
             take!(1) >>
-            (SetRequestData {
+            (SetRequest {
                 power,
                 mode,
                 temp,
@@ -121,9 +204,28 @@ impl PacketData<SetRequest> for SetRequestData {
             })
         )
     }
+
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        if buf.len() != Self::DATALEN {
+            Err(EncodingError)
+        } else {
+            buf[0] = 0x01;
+            self.encode_flags(&mut buf[1..3])?;
+            self.power.encode(&mut buf[3..4])?;
+            self.mode.encode(&mut buf[4..5])?;
+            buf[5] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_setpoint_mapped(), None => 0x00 };
+            self.fan.encode(&mut buf[6..7])?;
+            self.vane.encode(&mut buf[7..8])?;
+            for i in  &mut buf[8..13] { *i = 0 }
+            self.widevane.encode(&mut buf [13..14])?;
+            buf[14] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_half_deg_plus_offset(), None => 0x00 };
+            buf[15] = 0;
+            Ok(buf)
+        }
+    }
 }
 
-impl SetRequestData {
+impl SetRequest {
     fn encode_flags<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
         if into.len() != 2 { return Err(EncodingError); }
 
@@ -139,30 +241,31 @@ impl SetRequestData {
     }
 }
 
-impl Encodable for SetRequestData {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != Self::LENGTH {
+#[derive(Debug, Eq, PartialEq)]
+struct GetInfoRequest(InfoType);
+
+impl Packet for GetInfoRequest {
+    const TYPE: PacketTypeId = PacketTypeId::GetInfoRequest;
+
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            info_type: map!(be_u8, InfoType::from) >>
+            (GetInfoRequest(info_type))
+        )
+    }
+
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        if buf.len() != Self::DATALEN {
             Err(EncodingError)
         } else {
-            into[0] = 0x01;
-            self.encode_flags(&mut into[1..3])?;
-            self.power.encode(&mut into[3..4])?;
-            self.mode.encode(&mut into[4..5])?;
-            into[5] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_setpoint_mapped(), None => 0x00 };
-            self.fan.encode(&mut into[6..7])?;
-            self.vane.encode(&mut into[7..8])?;
-            for i in  &mut into[8..13] { *i = 0 }
-            self.widevane.encode(&mut into [13..14])?;
-            into[14] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_half_deg_plus_offset(), None => 0x00 };
-            into[15] = 0;
-            Ok(into)
+            buf[0] = self.0 as u8;
+            for i in &mut buf[1..16] { *i = 0 }
+            Ok(buf)
         }
     }
 }
-
-#[derive(Debug, Eq, PartialEq)]
-struct GetInfoRequest;
-impl PacketType for GetInfoRequest { const ID: u8 = 0x42; }
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -197,92 +300,61 @@ impl From<u8> for InfoType {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GetInfoRequestData(InfoType);
-impl PacketData<GetInfoRequest> for GetInfoRequestData {
-    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(from,
-            info_type: map!(be_u8, InfoType::from) >>
-            (GetInfoRequestData(info_type))
+struct ConnectRequest;
+
+impl Packet for ConnectRequest {
+    const TYPE: PacketTypeId = PacketTypeId::ConnectRequest;
+
+    const DATALEN: usize = 0x02;
+
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            tag!(&[Self::BYTE1, Self::BYTE2]) >>
+            (ConnectRequest)
         )
     }
-}
 
-impl Encodable for GetInfoRequestData {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != Self::LENGTH {
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        if buf.len() != Self::DATALEN {
             Err(EncodingError)
         } else {
-            into[0] = self.0 as u8;
-            for i in &mut into[1..16] { *i = 0 }
-            Ok(into)
+            buf[0] = Self::BYTE1;
+            buf[1] = Self::BYTE2;
+            Ok(buf)
         }
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum ConnectRequest {}
-impl PacketType for ConnectRequest { const ID: u8 = 0x5a; }
-
-struct ConnectRequestData;
-
-impl ConnectRequestData {
+impl ConnectRequest {
     // We have no idea what these magic values mean or if we can use anything
     // else, but they seem to do the trick...
     const BYTE1: u8 = 0xca;
     const BYTE2: u8 = 0x01;
 }
 
-impl PacketData<ConnectRequest> for ConnectRequestData {
-    const LENGTH: usize = 0x02;
-
-    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(from,
-            tag!(&[Self::BYTE1, Self::BYTE2]) >>
-            (ConnectRequestData)
-        )
-    }
-}
-
-impl Encodable for ConnectRequestData {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        if into.len() != Self::LENGTH {
-            Err(EncodingError)
-        } else {
-            into[0] = Self::BYTE1;
-            into[1] = Self::BYTE2;
-            Ok(into)
-        }
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
-enum SetResponse {}
-impl PacketType for SetResponse { const ID: u8 = 0x61; }
+struct SetResponse;
+impl Packet for SetResponse {
+    const TYPE: PacketTypeId = PacketTypeId::SetResponse;
 
-#[derive(Debug, Eq, PartialEq)]
-struct SetResponseData;
-
-impl PacketData<SetResponse> for SetResponseData {
-    fn decode(from: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(from,
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
             take!(16) >>
-            (SetResponseData)
+            (SetResponse)
         )
     }
-}
 
-impl Encodable for SetResponseData {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        Ok(into)
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        Ok(buf)
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum GetInfoResponse {}
-impl PacketType for GetInfoResponse { const ID: u8 = 0x62; }
-
-#[derive(Debug, PartialEq, Eq)]
-enum GetInfoResponseData {
+enum GetInfoResponse {
     Settings {
         power: Power,
         mode: Mode,
@@ -297,7 +369,27 @@ enum GetInfoResponseData {
     Unknown,
 }
 
-impl GetInfoResponseData {
+impl Packet for GetInfoResponse {
+    const TYPE: PacketTypeId = PacketTypeId::GetInfoResponse;
+
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        alt!(input,
+             Self::decode_settings |
+             Self::decode_room_temp |
+             Self::decode_timer |
+             Self::decode_status |
+             Self::decode_unknown
+        )
+    }
+
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        Ok(buf) // TODO
+    }
+}
+
+impl GetInfoResponse {
     fn decode_settings(input: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(input,
             tag!(&[InfoType::Settings as u8]) >>
@@ -320,7 +412,7 @@ impl GetInfoResponseData {
                 (_, s) => s,
             }) >>
             take!(4) >>
-            (GetInfoResponseData::Settings {
+            (GetInfoResponse::Settings {
                 power, mode, fan, vane, widevane, setpoint, isee
             })
         )
@@ -338,14 +430,14 @@ impl GetInfoResponseData {
                 (Temperature::HalfDegreesCPlusOffset { value: 0 }, t) => t,
                 (t, _) => t,
             }) >>
-            (GetInfoResponseData::RoomTemperature { temperature })
+            (GetInfoResponse::RoomTemperature { temperature })
         )
     }
 
     fn decode_timer(input: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(input,
             tag!(&[InfoType::Timers as u8]) >>
-            (GetInfoResponseData::Unknown)
+            (GetInfoResponse::Unknown)
         )
     }
 
@@ -355,68 +447,46 @@ impl GetInfoResponseData {
             take!(2) >>
             compressor_frequency: be_u8 >>
             operating: be_u8 >>
-            (GetInfoResponseData::Status { compressor_frequency, operating })
+            (GetInfoResponse::Status { compressor_frequency, operating })
         )
     }
 
     fn decode_unknown(input: &[u8]) -> IResult<&[u8], Self> {
-        do_parse!(input, (GetInfoResponseData::Unknown))
+        do_parse!(input, (GetInfoResponse::Unknown))
     }
 }
 
-impl PacketData<GetInfoResponse> for GetInfoResponseData {
-    fn decode(input: &[u8]) -> IResult<&[u8], Self> {
-        alt!(input,
-             Self::decode_settings |
-             Self::decode_room_temp |
-             Self::decode_timer |
-             Self::decode_status |
-             Self::decode_unknown
+#[derive(Debug, Eq, PartialEq)]
+struct ConnectResponse;
+
+impl Packet for ConnectResponse {
+    const TYPE: PacketTypeId = PacketTypeId::ConnectResponse;
+
+    /// Decodes raw bytes
+    fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
+        do_parse!(input,
+            (Self)
         )
     }
-}
 
-impl Encodable for GetInfoResponseData {
-    fn encode<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
-        // TODO
-        Ok(into)
+    /// Encodes the entire packet into a given buffer of raw bytes
+    fn encode_into<'a>(&self, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        Ok(buf) // TODO
     }
-}
 
-enum ConnectResponse {}
-impl PacketType for ConnectResponse { const ID: u8 = 0x7a; }
-
-named!(checksum<u8>, do_parse!(
-    length: peek!(do_parse!(tag!(&[0xfc]) >> take!(1) >> tag!(&[0x01, 0x30]) >> len: map!(be_u8, |b| b + 5) >> (len as usize))) >>
-    calculated: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
-    received: verify!(be_u8, |b| b == calculated) >>
-    (received)
-));
-
-fn parse_packet_type<T, D>(input: &[u8], d: fn(&[u8]) -> IResult<&[u8], D>) -> IResult<&[u8], Packet<T, D>> where T: PacketType, D: PacketData<T> {
-    do_parse!(input,
-        peek!(checksum) >>
-        tag!(&[0xfc,
-               T::ID,
-               0x01,
-               0x30]) >>
-        length: be_u8 >>
-        data: flat_map!(take!(length), d) >>
-        _checksum: be_u8 >>
-        (Packet::new(data))
-    )
 }
 
 mod tests {
     use super::*;
+    use super::super::types::TenthDegreesC;
 
     const EMPTY: &[u8] = &[];
 
     #[test]
     fn connect_request_test() {
         let mut buf: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let packet = Packet::new(ConnectRequestData);
-        assert_eq!(packet.encode(&mut buf),
+        let packet = ConnectRequest;
+        assert_eq!(ChecksummedPacket::encode(&packet, &mut buf),
                    Ok(&[0xfc, 0x5a, 0x01, 0x30, 0x02,
                         0xca, 0x01,
                         0xa8,
@@ -427,20 +497,20 @@ mod tests {
     #[test]
     fn get_info_request_test() {
         let mut buf: [u8; 22] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let packet = Packet::new(GetInfoRequestData(InfoType::Settings));
-        assert_eq!(packet.encode(&mut buf),
+        let packet = GetInfoRequest(InfoType::Settings);
+        assert_eq!(ChecksummedPacket::encode(&packet, &mut buf),
                    Ok(&[0xfc, 0x42, 0x01, 0x30, 0x10,
                         0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                         0x7b,
                         ][0..22]));
-        assert_eq!(Ok(packet), Packet::parse(&buf))
+        assert_eq!(Ok(packet), ChecksummedPacket::checksum(&buf).unwrap().decode())
     }
 
     #[test]
     fn set_request_flags_test() {
         let mut slice = [0x00, 0x00];
-        let mut data = SetRequestData {
+        let mut data = SetRequest {
             power: Some(Power::On),
             mode: Some(Mode::Auto),
             fan: Some(Fan::Auto),
@@ -487,15 +557,15 @@ mod tests {
     #[test]
     fn set_request_test() {
         let mut buf: [u8; 22] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let packet = Packet::new(SetRequestData {
+        let packet = SetRequest {
             power: Some(Power::On),
             mode: Some(Mode::Auto),
             fan: Some(Fan::Auto),
             vane: Some(Vane::Swing),
             widevane: Some(WideVane::LL),
             temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
-        });
-        let result = packet.encode(&mut buf);
+        };
+        let result = ChecksummedPacket::encode(&packet, &mut buf);
         assert_eq!(result,
                    Ok(&[0xfc, 0x41, 0x01, 0x30, 0x10,
                         0x01, 0x1f, 0x1,
@@ -507,7 +577,7 @@ mod tests {
                         0x98,
                    ][0..22])
         );
-        assert_eq!(Ok(packet), Packet::parse(&buf))
+        assert_eq!(Ok(packet), ChecksummedPacket::checksum(&buf).unwrap().decode())
     }
 
     #[test]
@@ -516,13 +586,13 @@ mod tests {
                                0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07,
                                0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00,
                                0xad];
-        assert_eq!(Packet::parse(buf), Ok(Packet::new(SetResponseData)))
+        assert_eq!(ChecksummedPacket::checksum(buf).unwrap().decode(), Ok(SetResponse))
     }
 
     #[test]
     fn decode_info_settings_test() {
-        assert_eq!(GetInfoResponseData::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoResponseData::Settings {
+        assert_eq!(GetInfoResponse::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0x94, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponse::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Temperature::HalfDegreesCPlusOffset { value: 0x94 },
@@ -534,8 +604,8 @@ mod tests {
             }))
         );
 
-        assert_eq!(GetInfoResponseData::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoResponseData::Settings {
+        assert_eq!(GetInfoResponse::decode_settings(&[0x02, 0x00, 0x00, 0x01, 0x01, 0x0f, 0x00, 0x07, 0x00, 0x00, 0x03, 0xa0, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponse::Settings {
                 power: Power::On,
                 mode: Mode::Heat,
                 setpoint: Temperature::HalfDegreesCPlusOffset { value: 0xa0 },
@@ -550,15 +620,15 @@ mod tests {
     #[test]
     fn decode_info_temperature_test() {
         // When the half-degrees value is present in byte 6, use it
-        assert_eq!(GetInfoResponseData::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
+        assert_eq!(GetInfoResponse::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0xaa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponse::RoomTemperature {
                 temperature: Temperature::HalfDegreesCPlusOffset{ value: 0xaa },
             }))
         );
         // When the half-degrees value is missing, test that we fall back to the
         // lower-res "mapped" value from byte 3
-        assert_eq!(GetInfoResponseData::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            Ok((EMPTY, GetInfoResponseData::RoomTemperature {
+        assert_eq!(GetInfoResponse::decode_room_temp(&[0x03, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+            Ok((EMPTY, GetInfoResponse::RoomTemperature {
                 temperature: Temperature::RoomTempMapped{ value: 0x0b },
             }))
         );
