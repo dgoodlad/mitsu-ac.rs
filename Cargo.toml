@@ -6,3 +6,5 @@ edition = "2018"
 
 [dependencies]
 nom = { version = "^4.2", default-features = false }
+embedded-hal = "0.2.2"
+heapless = "0.4.3"

@@ -2,6 +2,10 @@ use nom::*;
 use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 use super::encoding::*;
 
+/// The maximum number of bytes for any packet in the protocol
+pub const MAX_PACKET_LEN: usize = 22;
+
+/// A generic error thrown whenever packet decoding fails
 #[derive(Debug, Eq, PartialEq)]
 pub struct DecodingError;
 
@@ -36,11 +40,81 @@ impl From<u8> for PacketTypeId {
     }
 }
 
-named!(checksum<u8>, do_parse!(
-    length: peek!(do_parse!(tag!(&[0xfc]) >> take!(1) >> tag!(&[0x01, 0x30]) >> len: map!(be_u8, |b| b + 5) >> (len as usize))) >>
-    calculated: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
-    received: verify!(be_u8, |b| b == calculated) >>
-    (received)
+const MAGIC_BYTE: u8 = 0xfc;
+
+named!(length_byte<usize>, map!(be_u8, |b| b as usize));
+
+named!(packet_type_id<PacketTypeId>, map!(be_u8, PacketTypeId::from));
+
+named!(complete_raw_packet<RawPacket>, do_parse!(
+    type_id_and_length: peek!(do_parse!(
+        tag!(&[MAGIC_BYTE]) >>
+        type_id: packet_type_id >>
+        tag!(&[0x01, 0x30]) >>
+        length: length_byte >>
+        ((type_id, length))
+    )) >>
+    type_id: value!(type_id_and_length.0) >>
+    length: value!(type_id_and_length.1 + 5) >> // Add 5 to include the length of the header bytes
+    raw_bytes: take!(length) >>
+    (RawPacket::Complete { type_id, length, raw_bytes })
+));
+
+named!(incomplete_raw_packet<RawPacket>, do_parse!(
+    expected_length: opt!(complete!(do_parse!(
+        take!(4) >>
+        length: length_byte >>
+        (length + 5)
+    ))) >>
+    (RawPacket::Incomplete { expected_length })
+));
+
+named!(take_till_magic_byte, take_till!(|b| b == MAGIC_BYTE));
+
+named!(raw_packet<RawPacket>, do_parse!(
+    take_till_magic_byte >>
+    packet: alt!(complete_raw_packet | incomplete_raw_packet) >>
+    (packet)
+));
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum RawPacket<'a> {
+    Complete { type_id: PacketTypeId, length: usize, raw_bytes: &'a [u8] },
+    Incomplete { expected_length: Option<usize> },
+}
+
+impl<'a> RawPacket<'a> {
+    pub fn read(input: &'a [u8]) -> IResult<&'a [u8], Self> {
+        raw_packet(input)
+    }
+}
+
+named_args!(fold_sum_n(n: usize)<&[u8], u32>,
+    fold_many_m_n!(n, n, be_u8, 0u32, |acc, b| acc + b as u32)
+);
+
+named_args!(calculate_checksum(length: usize)<&[u8], u8>,
+    map!(call!(fold_sum_n, length), |i| MAGIC_BYTE - (i as u8))
+);
+
+named_args!(verify_checksum(calculated: u8)<&[u8], u8>,
+    verify!(be_u8, |b| b == calculated)
+);
+
+named!(checksummed_raw_packet<Option<ChecksummedPacket>>, do_parse!(
+    take_till_magic_byte >>
+    packet: map!(peek!(alt!(complete_raw_packet | incomplete_raw_packet)), |packet| match packet {
+        RawPacket::Complete { type_id, length, raw_bytes } => Some(checksummed_complete_raw_packet(raw_bytes, type_id, length)),
+        RawPacket::Incomplete { expected_length } => None
+    ) >>
+    (packet)
+));
+
+named_args!(checksummed_complete_raw_packet(type_id: PacketTypeId, length: usize)<ChecksummedPacket>, do_parse!(
+    calculated_checksum: peek!(call!(calculate_checksum, length)) >>
+    checksum: peek!(call!(verify_checksum, calculated_checksum)) >>
+    raw_bytes: take!(length) >>
+    (ChecksummedPacket::Matched { checksum, packet_type_id: type_id, raw_bytes: raw_bytes })
 ));
 
 pub enum ChecksummedPacket<'a> {
@@ -58,63 +132,56 @@ pub enum ChecksummedPacket<'a> {
 }
 
 impl<'a> ChecksummedPacket<'a> {
-    pub fn checksum(raw_bytes: &'a [u8]) -> Result<Self, DecodingError> {
-        let result = do_parse!(raw_bytes,
-            type_id_and_length: peek!(do_parse!(
-                tag!(&[0xfc]) >>
-                type_id: be_u8 >>
-                tag!(&[0x01, 0x30]) >>
-                len: map!(be_u8, |b| b + 5) >>
-                ((type_id, len as usize))
-            )) >>
-            packet_type_id: value!(PacketTypeId::from(type_id_and_length.0)) >>
-            length: value!(type_id_and_length.1) >>
-            calculated_checksum: map!(fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
-            received_checksum: be_u8 >>
-            (Self::new(calculated_checksum, received_checksum, packet_type_id, raw_bytes))
-        );
+    // pub fn checksum(cp: RawPacket<'a>) -> Result<Self, DecodingError> {
+    //     let packet_type_id = cp.type_id;
+    //     let raw_bytes = cp.raw_bytes;
+    //     let result = do_parse!(cp.raw_bytes,
+    //         calculated_checksum: map!(fold_many_m_n!(cp.length, cp.length, be_u8, 0u32, |acc, b| acc + b as u32), |i| 0xfc - (i as u8)) >>
+    //         received_checksum: be_u8 >>
+    //         (Self::new(calculated_checksum, received_checksum, packet_type_id, raw_bytes))
+    //     );
 
-        match result {
-            // TODO don't discard the remaining bytes
-            Ok((_remaining_bytes, packet)) => Ok(packet),
-            Err(_e) => Err(DecodingError),
-        }
-    }
+    //     match result {
+    //         // TODO don't discard the remaining bytes
+    //         Ok((_remaining_bytes, packet)) => Ok(packet),
+    //         Err(_e) => Err(DecodingError),
+    //     }
+    // }
 
-    fn new(calculated_checksum: u8, received_checksum: u8, packet_type_id: PacketTypeId, raw_bytes: &'a [u8]) -> Self {
-        if calculated_checksum == received_checksum {
-            ChecksummedPacket::Matched { checksum: received_checksum, packet_type_id, raw_bytes }
-        } else {
-            ChecksummedPacket::Invalid { received_checksum, calculated_checksum, packet_type_id, raw_bytes }
-        }
-    }
+    // fn new(calculated_checksum: u8, received_checksum: u8, packet_type_id: PacketTypeId, raw_bytes: &'a [u8]) -> Self {
+    //     if calculated_checksum == received_checksum {
+    //         ChecksummedPacket::Matched { checksum: received_checksum, packet_type_id, raw_bytes }
+    //     } else {
+    //         ChecksummedPacket::Invalid { received_checksum, calculated_checksum, packet_type_id, raw_bytes }
+    //     }
+    // }
 
-    pub fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
-        match self {
-            ChecksummedPacket::Matched { checksum, packet_type_id, raw_bytes } => {
-                // TODO define an error type to handle this "mismatched types" case
-                // We're checking to make sure that the caller is trying to
-                // parse this packet into the right kind of packet based on the type id
-                if packet_type_id != T::TYPE { return Err(DecodingError) }
+    // pub fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
+    //     match self {
+    //         ChecksummedPacket::Matched { checksum, packet_type_id, raw_bytes } => {
+    //             // TODO define an error type to handle this "mismatched types" case
+    //             // We're checking to make sure that the caller is trying to
+    //             // parse this packet into the right kind of packet based on the type id
+    //             if packet_type_id != T::TYPE { return Err(DecodingError) }
 
-                let result = do_parse!(raw_bytes,
-                    tag!(&[0xfc]) >>
-                    tag!(&[T::TYPE as u8]) >>
-                    tag!(&[0x01, 0x30]) >>
-                    tag!(&[T::DATALEN as u8]) >>
-                    packet: flat_map!(take!(T::DATALEN), T::decode_data) >>
-                    tag!(&[checksum]) >>
-                    (packet)
-                );
-                match result {
-                    Ok((_, packet)) => Ok(packet),
-                    Err(_e) => Err(DecodingError),
-                }
-            },
+    //             let result = do_parse!(raw_bytes,
+    //                 tag!(&[0xfc]) >>
+    //                 tag!(&[T::TYPE as u8]) >>
+    //                 tag!(&[0x01, 0x30]) >>
+    //                 tag!(&[T::DATALEN as u8]) >>
+    //                 packet: flat_map!(take!(T::DATALEN), T::decode_data) >>
+    //                 tag!(&[checksum]) >>
+    //                 (packet)
+    //             );
+    //             match result {
+    //                 Ok((_, packet)) => Ok(packet),
+    //                 Err(_e) => Err(DecodingError),
+    //             }
+    //         },
 
-            ChecksummedPacket::Invalid {received_checksum: _, calculated_checksum: _, packet_type_id: _, raw_bytes: _} => Err(DecodingError),
-        }
-    }
+    //         ChecksummedPacket::Invalid {received_checksum: _, calculated_checksum: _, packet_type_id: _, raw_bytes: _} => Err(DecodingError),
+    //     }
+    // }
 
     pub fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: Packet {
         buf[0] = 0xfc;

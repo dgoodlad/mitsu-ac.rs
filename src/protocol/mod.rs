@@ -1,5 +1,5 @@
-pub mod packets;
-
 #[macro_use]
 mod encoding;
-mod types;
+
+pub mod packets;
+pub mod types;
