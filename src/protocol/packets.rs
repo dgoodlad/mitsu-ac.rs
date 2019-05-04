@@ -1,4 +1,4 @@
-use nom::*;
+use combine::{Parser, any};
 use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 use super::encoding::*;
 
@@ -42,40 +42,49 @@ impl From<u8> for PacketTypeId {
 
 const MAGIC_BYTE: u8 = 0xfc;
 
-named!(length_byte<usize>, map!(be_u8, |b| b as usize));
+// named!(length_byte<usize>, map!(be_u8, |b| b as usize));
 
-named!(packet_type_id<PacketTypeId>, map!(be_u8, PacketTypeId::from));
+// named!(packet_type_id<PacketTypeId>, map!(be_u8, PacketTypeId::from));
 
-named!(complete_raw_packet<RawPacket>, do_parse!(
-    type_id_and_length: peek!(do_parse!(
-        tag!(&[MAGIC_BYTE]) >>
-        type_id: packet_type_id >>
-        tag!(&[0x01, 0x30]) >>
-        length: length_byte >>
-        ((type_id, length))
-    )) >>
-    type_id: value!(type_id_and_length.0) >>
-    length: value!(type_id_and_length.1 + 5) >> // Add 5 to include the length of the header bytes
-    raw_bytes: take!(length) >>
-    (RawPacket::Complete { type_id, length, raw_bytes })
-));
+// named!(complete_raw_packet<RawPacket>, do_parse!(
+//     type_id_and_length: peek!(do_parse!(
+//         tag!(&[MAGIC_BYTE]) >>
+//         type_id: packet_type_id >>
+//         tag!(&[0x01, 0x30]) >>
+//         length: length_byte >>
+//         ((type_id, length))
+//     )) >>
+//     type_id: value!(type_id_and_length.0) >>
+//     length: value!(type_id_and_length.1 + 5) >> // Add 5 to include the length of the header bytes
+//     raw_bytes: take!(length) >>
+//     (RawPacket::Complete { type_id, length, raw_bytes })
+// ));
 
-named!(incomplete_raw_packet<RawPacket>, do_parse!(
-    expected_length: opt!(complete!(do_parse!(
-        take!(4) >>
-        length: length_byte >>
-        (length + 5)
-    ))) >>
-    (RawPacket::Incomplete { expected_length })
-));
+// named!(incomplete_raw_packet<RawPacket>, do_parse!(
+//     expected_length: opt!(complete!(do_parse!(
+//         take!(4) >>
+//         length: length_byte >>
+//         (length + 5)
+//     ))) >>
+//     (RawPacket::Incomplete { expected_length })
+// ));
 
-named!(take_till_magic_byte, take_till!(|b| b == MAGIC_BYTE));
+// named!(take_till_magic_byte, take_till!(|b| b == MAGIC_BYTE));
 
-named!(raw_packet<RawPacket>, do_parse!(
-    take_till_magic_byte >>
-    packet: alt!(complete_raw_packet | incomplete_raw_packet) >>
-    (packet)
-));
+// named!(raw_packet<RawPacket>, do_parse!(
+//     take_till_magic_byte >>
+//     packet: alt!(complete_raw_packet | incomplete_raw_packet) >>
+//     (packet)
+// ));
+
+fn packet_type_id<I>() -> impl Parser<Input = I, Output = PacketTypeId>
+where
+    I: combine::stream::Stream<Item = u8>,
+    I::Error: combine::error::ParseError<I::Item, I::Range, I::Position>,
+{
+    any().map(PacketTypeId::from)
+}
+
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum RawPacket<'a> {
@@ -84,38 +93,36 @@ pub enum RawPacket<'a> {
 }
 
 impl<'a> RawPacket<'a> {
-    pub fn read(input: &'a [u8]) -> IResult<&'a [u8], Self> {
-        raw_packet(input)
-    }
+    fn
 }
 
-named_args!(fold_sum_n(n: usize)<&[u8], u32>,
-    fold_many_m_n!(n, n, be_u8, 0u32, |acc, b| acc + b as u32)
-);
+// named_args!(fold_sum_n(n: usize)<&[u8], u32>,
+//     fold_many_m_n!(n, n, be_u8, 0u32, |acc, b| acc + b as u32)
+// );
 
-named_args!(calculate_checksum(length: usize)<&[u8], u8>,
-    map!(call!(fold_sum_n, length), |i| MAGIC_BYTE - (i as u8))
-);
+// named_args!(calculate_checksum(length: usize)<&[u8], u8>,
+//     map!(call!(fold_sum_n, length), |i| MAGIC_BYTE - (i as u8))
+// );
 
-named_args!(verify_checksum(calculated: u8)<&[u8], u8>,
-    verify!(be_u8, |b| b == calculated)
-);
+// named_args!(verify_checksum(calculated: u8)<&[u8], u8>,
+//     verify!(be_u8, |b| b == calculated)
+// );
 
-named!(checksummed_raw_packet<Option<ChecksummedPacket>>, do_parse!(
-    take_till_magic_byte >>
-    packet: map!(peek!(alt!(complete_raw_packet | incomplete_raw_packet)), |packet| match packet {
-        RawPacket::Complete { type_id, length, raw_bytes } => Some(checksummed_complete_raw_packet(raw_bytes, type_id, length)),
-        RawPacket::Incomplete { expected_length } => None
-    ) >>
-    (packet)
-));
+// named!(checksummed_raw_packet<Option<ChecksummedPacket>>, do_parse!(
+//     take_till_magic_byte >>
+//     packet: map!(peek!(alt!(complete_raw_packet | incomplete_raw_packet)), |packet| match packet {
+//         RawPacket::Complete { type_id, length, raw_bytes } => Some(checksummed_complete_raw_packet(raw_bytes, type_id, length)),
+//         RawPacket::Incomplete { expected_length } => None
+//     }) >>
+//     (packet)
+// ));
 
-named_args!(checksummed_complete_raw_packet(type_id: PacketTypeId, length: usize)<ChecksummedPacket>, do_parse!(
-    calculated_checksum: peek!(call!(calculate_checksum, length)) >>
-    checksum: peek!(call!(verify_checksum, calculated_checksum)) >>
-    raw_bytes: take!(length) >>
-    (ChecksummedPacket::Matched { checksum, packet_type_id: type_id, raw_bytes: raw_bytes })
-));
+// named_args!(checksummed_complete_raw_packet(type_id: PacketTypeId, length: usize)<ChecksummedPacket>, do_parse!(
+//     calculated_checksum: peek!(call!(calculate_checksum, length)) >>
+//     checksum: peek!(call!(verify_checksum, calculated_checksum)) >>
+//     raw_bytes: take!(length) >>
+//     (ChecksummedPacket::Matched { checksum, packet_type_id: type_id, raw_bytes: raw_bytes })
+// ));
 
 pub enum ChecksummedPacket<'a> {
     Matched {

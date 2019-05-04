@@ -1,8 +1,6 @@
 #![no_std]
 
-#[macro_use]
-extern crate nom;
-
+extern crate combine;
 extern crate embedded_hal;
 extern crate heapless;
 
