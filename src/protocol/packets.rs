@@ -89,7 +89,7 @@ impl<'a> ChecksummedPacket<'a> {
         }
     }
 
-    pub fn decode<T>(self) -> Result<T, DecodingError> where T: Packet {
+    pub fn decode<T>(self) -> Result<T, DecodingError> where T: PacketType {
         match self {
             ChecksummedPacket::Matched { checksum, packet_type_id, raw_bytes } => {
                 // TODO define an error type to handle this "mismatched types" case
@@ -116,7 +116,7 @@ impl<'a> ChecksummedPacket<'a> {
         }
     }
 
-    pub fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: Packet {
+    pub fn encode<T>(packet: &T, buf: &'a mut [u8]) -> Result<&'a [u8], EncodingError> where T: PacketType {
         buf[0] = 0xfc;
         buf[1] = T::TYPE as u8;
         buf[2] = 0x01;
@@ -129,8 +129,20 @@ impl<'a> ChecksummedPacket<'a> {
     }
 }
 
+pub enum Packet<'a> {
+    SetRequest(SetRequest),
+    GetInfoRequest(GetInfoRequest),
+    ConnectRequest(ConnectRequest),
+
+    SetResponse(SetResponse),
+    GetInfoResponse(GetInfoResponse),
+    ConnectResponse(ConnectResponse),
+
+    Unknown(&'a [u8]),
+}
+
 /// A single packet of a particular type (`PacketTypeId`)
-pub trait Packet: Sized {
+pub trait PacketType: Sized {
     const TYPE: PacketTypeId;
 
     /// Length in bytes of the data associated with this type of packet
@@ -187,7 +199,7 @@ pub struct SetRequest {
     pub widevane: Option<WideVane>,
 }
 
-impl Packet for SetRequest {
+impl PacketType for SetRequest {
     const TYPE: PacketTypeId = PacketTypeId::SetRequest;
 
     fn decode_data(input: &[u8]) -> IResult<&[u8], Self> {
@@ -261,9 +273,9 @@ impl SetRequest {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GetInfoRequest(InfoType);
+pub struct GetInfoRequest(InfoType);
 
-impl Packet for GetInfoRequest {
+impl PacketType for GetInfoRequest {
     const TYPE: PacketTypeId = PacketTypeId::GetInfoRequest;
 
     /// Decodes raw bytes
@@ -319,9 +331,9 @@ impl From<u8> for InfoType {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ConnectRequest;
+pub struct ConnectRequest;
 
-impl Packet for ConnectRequest {
+impl PacketType for ConnectRequest {
     const TYPE: PacketTypeId = PacketTypeId::ConnectRequest;
 
     const DATALEN: usize = 0x02;
@@ -354,8 +366,8 @@ impl ConnectRequest {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct SetResponse;
-impl Packet for SetResponse {
+pub struct SetResponse;
+impl PacketType for SetResponse {
     const TYPE: PacketTypeId = PacketTypeId::SetResponse;
 
     /// Decodes raw bytes
@@ -373,7 +385,7 @@ impl Packet for SetResponse {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum GetInfoResponse {
+pub enum GetInfoResponse {
     Settings {
         power: Power,
         mode: Mode,
@@ -388,7 +400,7 @@ enum GetInfoResponse {
     Unknown,
 }
 
-impl Packet for GetInfoResponse {
+impl PacketType for GetInfoResponse {
     const TYPE: PacketTypeId = PacketTypeId::GetInfoResponse;
 
     /// Decodes raw bytes
@@ -476,9 +488,9 @@ impl GetInfoResponse {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ConnectResponse;
+pub struct ConnectResponse;
 
-impl Packet for ConnectResponse {
+impl PacketType for ConnectResponse {
     const TYPE: PacketTypeId = PacketTypeId::ConnectResponse;
 
     /// Decodes raw bytes
