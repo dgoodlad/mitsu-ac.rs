@@ -75,36 +75,17 @@ impl<'a> Frame<'a> {
         }
     }
 
-    fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), FrameParsingError> {
-        if data.len() < 6 { return Err(FrameParsingError::IncompleteData(None)) }
-
-        let result = do_parse!(data,
+    fn parse(data: &'a [u8]) -> nom::IResult<&[u8], Self> {
+        do_parse!(data,
             tag!(&[FRAME_START]) >>
             data_type: map!(be_u8, DataType::from) >>
             tag!(&[FRAME_B3, FRAME_B4]) >>
             data_len: map!(be_u8, |b| b as usize) >>
             data: take!(data_len) >>
-            checksum: be_u8 >>
+            checksum: value!(Self::checksum(data_type, data_len, data)) >>
+            verify!(be_u8, |b| b == checksum) >>
             (Self { data_type, data_len, data, checksum })
-        );
-
-        match result {
-            Ok((remaining_data, frame)) => {
-                if frame.validate_checksum() {
-                    Ok((frame, remaining_data))
-                } else {
-                    Err(FrameParsingError::InvalidChecksum)
-                }
-            },
-
-            Err(nom::Err::Incomplete(needed)) => match needed {
-                nom::Needed::Size(size) => Err(FrameParsingError::IncompleteData(Some(size))),
-                nom::Needed::Unknown => Err(FrameParsingError::IncompleteData(None)),
-            },
-
-            Err(nom::Err::Failure((remaining_data, err))) => Err(FrameParsingError::UnknownError(remaining_data)),
-            Err(nom::Err::Error((remaining_data, err))) => Err(FrameParsingError::UnknownError(remaining_data)),
-        }
+        )
     }
 }
 
