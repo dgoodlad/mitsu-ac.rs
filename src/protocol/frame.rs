@@ -105,12 +105,12 @@ mod tests {
     #[test]
     fn parse_test() {
         assert_eq!(
-            Ok((Frame { data_type: DataType::GetInfoRequest,
+            Ok((EMPTY, (Frame { data_type: DataType::GetInfoRequest,
                         data_len: 0x10,
                         data: &[0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
                         checksum: 0x7b,
-            }, EMPTY)),
+            }))),
             Frame::parse(&[
                 0xfc, 0x42, 0x01, 0x30, 0x10,
                 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
