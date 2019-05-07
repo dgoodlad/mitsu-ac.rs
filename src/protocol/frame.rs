@@ -1,4 +1,5 @@
-use nom::{be_u8, do_parse};
+use nom::number::streaming::be_u8;
+use nom::do_parse;
 
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -43,9 +44,10 @@ pub struct Frame<'a> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub enum FrameParsingError {
+pub enum FrameParsingError<'a> {
     InvalidChecksum,
-    LengthMismatch,
+    IncompleteData(Option<usize>),
+    UnknownError(&'a [u8]),
 }
 
 impl<'a> Frame<'a> {
@@ -73,7 +75,9 @@ impl<'a> Frame<'a> {
         }
     }
 
-    fn parse(data: &'a [u8]) -> Result<Self, FrameParsingError> {
+    fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), FrameParsingError> {
+        if data.len() < 6 { return Err(FrameParsingError::IncompleteData(None)) }
+
         let result = do_parse!(data,
             tag!(&[FRAME_START]) >>
             data_type: map!(be_u8, DataType::from) >>
@@ -87,18 +91,27 @@ impl<'a> Frame<'a> {
         match result {
             Ok((remaining_data, frame)) => {
                 if frame.validate_checksum() {
-                    Ok(frame)
+                    Ok((frame, remaining_data))
                 } else {
                     Err(FrameParsingError::InvalidChecksum)
                 }
             },
-            Err(_) => Err(FrameParsingError::LengthMismatch)
+
+            Err(nom::Err::Incomplete(needed)) => match needed {
+                nom::Needed::Size(size) => Err(FrameParsingError::IncompleteData(Some(size))),
+                nom::Needed::Unknown => Err(FrameParsingError::IncompleteData(None)),
+            },
+
+            Err(nom::Err::Failure((remaining_data, err))) => Err(FrameParsingError::UnknownError(remaining_data)),
+            Err(nom::Err::Error((remaining_data, err))) => Err(FrameParsingError::UnknownError(remaining_data)),
         }
     }
 }
 
 mod tests {
     use super::*;
+
+    const EMPTY: &[u8] = &[];
 
     #[test]
     fn checksum_test() {
@@ -111,12 +124,12 @@ mod tests {
     #[test]
     fn parse_test() {
         assert_eq!(
-            Ok(Frame { data_type: DataType::GetInfoRequest,
-                    data_len: 0x10,
-                    data: &[0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-                    checksum: 0x7b,
-            }),
+            Ok((Frame { data_type: DataType::GetInfoRequest,
+                        data_len: 0x10,
+                        data: &[0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+                        checksum: 0x7b,
+            }, EMPTY)),
             Frame::parse(&[
                 0xfc, 0x42, 0x01, 0x30, 0x10,
                 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

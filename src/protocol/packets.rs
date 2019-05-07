@@ -1,4 +1,6 @@
-use nom::*;
+//use nom::*;
+use nom::number::streaming::be_u8;
+use nom::{do_parse, IResult};
 use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 use super::encoding::*;
 
@@ -140,6 +142,40 @@ pub enum Packet<'a> {
 
     Unknown(&'a [u8]),
 }
+
+impl<'a> Packet<'a> {
+    pub fn decode(data: &[u8]) -> Option<Packet> {
+        Some(Packet::Unknown(data))
+    }
+}
+
+named!(packet_type_id<PacketTypeId>, map!(be_u8, PacketTypeId::from));
+
+named!(packet_data_length<usize>, map!(be_u8, usize::from));
+
+named_args!(checksum2(length: usize)<u8>, map!(
+    fold_many_m_n!(length, length, be_u8, 0u32, |acc, b| acc + b as u32),
+    |i| 0xfc - (i as u8)
+));
+
+struct PacketHeader { type_id: PacketTypeId, len: usize }
+
+named!(packet_header<PacketHeader>, do_parse!(
+    tag!(&[0xfc]) >>
+    type_id: packet_type_id >>
+    tag!(&[0x01, 0x30]) >>
+    len: packet_data_length >>
+    (PacketHeader { type_id, len })
+));
+
+named!(raw_packet<&[u8]>, do_parse!(
+    header: peek!(packet_header) >>
+    calculated_checksum: peek!(call!(checksum2, header.len + 5)) >>
+    take!(5) >>
+    data: take!(header.len) >>
+    checksum: verify!(be_u8, |b| b == calculated_checksum) >>
+    (data)
+));
 
 /// A single packet of a particular type (`PacketTypeId`)
 pub trait PacketType: Sized {
