@@ -4,6 +4,8 @@ use nom::{do_parse, IResult};
 use super::frame::{DataType, Frame};
 use super::types::{Power, Mode, Temperature, Fan, Vane, WideVane, ISee};
 
+use super::encoding::*;
+
 /// Decoded `Frame` data. Each variant contains a concrete type useful for
 /// representing the `Frame`'s `data_type`.
 #[derive(Debug, Eq, PartialEq)]
@@ -42,6 +44,23 @@ impl FrameData {
             Err(e) => Err(e),
         }
     }
+
+    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+        match self {
+            FrameData::SetRequest(data) => data.encode(buffer),
+            FrameData::GetInfoRequest(data) => data.encode(buffer),
+            FrameData::ConnectRequest(data) => data.encode(buffer),
+            FrameData::SetResponse(data) => data.encode(buffer),
+            FrameData::GetInfoResponse(data) => data.encode(buffer),
+            FrameData::ConnectResponse(data) => data.encode(buffer),
+
+            FrameData::Unknown => Err(EncodingError::UnknownDataType),
+        }
+    }
+}
+
+trait EncodableDataType : Encodable {
+    const DATALEN: usize = 0x10;
 }
 
 trait Parseable : Sized {
@@ -126,6 +145,45 @@ impl Parseable for SetRequest {
     }
 }
 
+impl EncodableDataType for SetRequest {}
+
+impl Encodable for SetRequest {
+    fn encode<'a>(&self, buf: &'a mut [u8]) -> Result<usize, EncodingError> {
+        if buf.len() != Self::DATALEN {
+            Err(EncodingError::BufferTooSmall)
+        } else {
+            buf[0] = 0x01;
+            self.encode_flags(&mut buf[1..3])?;
+            self.power.encode(&mut buf[3..4])?;
+            self.mode.encode(&mut buf[4..5])?;
+            buf[5] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_setpoint_mapped(), None => 0x00 };
+            self.fan.encode(&mut buf[6..7])?;
+            self.vane.encode(&mut buf[7..8])?;
+            for i in  &mut buf[8..13] { *i = 0 }
+            self.widevane.encode(&mut buf [13..14])?;
+            buf[14] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_half_deg_plus_offset(), None => 0x00 };
+            buf[15] = 0;
+            Ok(Self::DATALEN)
+        }
+    }
+}
+
+impl SetRequest {
+    fn encode_flags<'a>(&self, into: &'a mut [u8]) -> Result<&'a [u8], EncodingError> {
+        if into.len() != 2 { return Err(EncodingError::BufferTooSmall); }
+
+        into[0] = 0x00u8 |
+            (match self.power { Some(Power::Unknown) => 0, Some(_) => 0b00000001, _ => 0 }) |
+            (match self.mode  { Some(Mode::Unknown)  => 0, Some(_) => 0b00000010, _ => 0 }) |
+            (match self.temp  {                            Some(_) => 0b00000100, _ => 0 }) |
+            (match self.fan   { Some(Fan::Unknown)   => 0, Some(_) => 0b00001000, _ => 0 }) |
+            (match self.vane  { Some(Vane::Unknown)  => 0, Some(_) => 0b00010000, _ => 0 });
+        into[1] = 0x00u8 |
+            (match self.widevane { Some(WideVane::Unknown) => 0, Some(_) => 0b00000001, _ => 0 });
+        Ok(into)
+    }
+}
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum InfoType {
@@ -160,8 +218,23 @@ impl Parseable for GetInfoRequest {
     fn parse(data: &[u8]) -> IResult<&[u8], Self> {
         do_parse!(data,
             info_type: map!(be_u8, InfoType::from) >>
+            take!(15) >>
             (GetInfoRequest(info_type))
         )
+    }
+}
+
+impl EncodableDataType for GetInfoRequest {}
+
+impl Encodable for GetInfoRequest {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodingError> {
+        if buf.len() != Self::DATALEN {
+            Err(EncodingError::BufferTooSmall)
+        } else {
+            buf[0] = self.0 as u8;
+            for i in &mut buf[1..16] { *i = 0 }
+            Ok(Self::DATALEN)
+        }
     }
 }
 
@@ -185,6 +258,22 @@ impl Parseable for ConnectRequest {
     }
 }
 
+impl EncodableDataType for ConnectRequest {
+    const DATALEN: usize = 2;
+}
+
+impl Encodable for ConnectRequest {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodingError> {
+        if buf.len() != Self::DATALEN {
+            Err(EncodingError::BufferTooSmall)
+        } else {
+            buf[0] = Self::BYTE1;
+            buf[1] = Self::BYTE2;
+            Ok(Self::DATALEN)
+        }
+    }
+}
+
 /// Response to the SetRequest
 ///
 /// The data is opaque, and not yet understood.
@@ -197,6 +286,12 @@ impl Parseable for SetResponse {
             take!(16) >>
             (SetResponse)
         )
+    }
+}
+
+impl Encodable for SetResponse {
+    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+        Err(EncodingError::NotImplemented)
     }
 }
 
@@ -301,6 +396,12 @@ impl Parseable for GetInfoResponse {
     }
 }
 
+impl Encodable for GetInfoResponse {
+    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+        Err(EncodingError::NotImplemented)
+    }
+}
+
 /// Response to our `ConnectRequest`
 ///
 /// Once we see this response, we know the device is ready to talk.
@@ -313,6 +414,12 @@ impl Parseable for ConnectResponse {
     }
 }
 
+impl Encodable for ConnectResponse {
+    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+        Err(EncodingError::NotImplemented)
+    }
+}
+
 mod tests {
     use super::*;
     use super::super::types::TenthDegreesC;
@@ -320,10 +427,24 @@ mod tests {
     const EMPTY: &[u8] = &[];
 
     #[test]
-    fn parse_connect_request_test() {
-        let data: &[u8] = &[0xca, 0x01];
-        let result = FrameData::parse_data_type(FrameData::ConnectRequest, data);
-        assert_eq!(Ok((EMPTY, FrameData::ConnectRequest(ConnectRequest))), result);
+    fn parse_get_info_request_test() {
+        let data: &[u8] = &[
+            0x02, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+        let result = FrameData::parse_data_type(FrameData::GetInfoRequest, data);
+        assert_eq!(Ok((EMPTY, FrameData::GetInfoRequest(GetInfoRequest(InfoType::Settings)))), result);
+    }
+
+    #[test]
+    fn encode_get_info_request_test() {
+        let mut buf: [u8; 16] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let expected: [u8; 16] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let result = FrameData::GetInfoRequest(GetInfoRequest(InfoType::Settings)).encode(&mut buf);
+        assert_eq!(Ok(16), result);
+        assert_eq!(expected, buf);
     }
 
     #[test]
@@ -345,6 +466,92 @@ mod tests {
             widevane: Some(WideVane::LL),
             temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
         }))), result);
+    }
+
+    #[test]
+    fn encode_set_request_flags_test() {
+        let mut buf: [u8; 2] = [0x00, 0x00];
+        let mut data = SetRequest {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        };
+
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00011111, buf[0]);
+        assert_eq!(0b00000001, buf[1]);
+
+        data.widevane = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00011111, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+
+        data.power = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00011110, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+
+        data.mode = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00011100, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+
+        data.fan = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00010100, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+
+        data.vane = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00000100, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+
+        data.temp = None;
+        data.encode_flags(&mut buf).unwrap();
+        assert_eq!(0b00000000, buf[0]);
+        assert_eq!(0b00000000, buf[1]);
+    }
+
+    #[test]
+    fn encode_set_request_test() {
+        let mut buf: [u8; 16] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let expected: [u8; 16] = [
+            0x01, 0x1f, 0x01,
+            0x01, 0x08, 0x0a, 0x00, 0x07,
+            0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01,
+            0xaa,
+            0x00
+        ];
+        let result = SetRequest {
+            power: Some(Power::On),
+            mode: Some(Mode::Auto),
+            fan: Some(Fan::Auto),
+            vane: Some(Vane::Swing),
+            widevane: Some(WideVane::LL),
+            temp: Some(Temperature::HalfDegreesCPlusOffset { value: TenthDegreesC(210).encode_as_half_deg_plus_offset() }),
+        }.encode(&mut buf);
+        assert_eq!(Ok(16), result);
+        assert_eq!(expected, buf);
+    }
+
+    #[test]
+    fn parse_connect_request_test() {
+        let data: &[u8] = &[0xca, 0x01];
+        let result = FrameData::parse_data_type(FrameData::ConnectRequest, data);
+        assert_eq!(Ok((EMPTY, FrameData::ConnectRequest(ConnectRequest))), result);
+    }
+
+    #[test]
+    fn encode_connect_request_test() {
+        let mut buf: [u8; 2] = [0x00, 0x00];
+        let expected: [u8; 2] = [0xca, 0x01];
+        let result = ConnectRequest.encode(&mut buf);
+        assert_eq!(Ok(2), result);
+        assert_eq!(expected, buf);
     }
 
     #[test]
