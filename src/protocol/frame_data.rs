@@ -45,7 +45,7 @@ impl FrameData {
         }
     }
 
-    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+    pub fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
         match self {
             FrameData::SetRequest(data) => data.encode(buffer),
             FrameData::GetInfoRequest(data) => data.encode(buffer),

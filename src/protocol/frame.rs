@@ -1,6 +1,8 @@
 use nom::number::streaming::be_u8;
 use nom::do_parse;
 
+use super::encoding::{Encodable, EncodingError};
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DataType {
@@ -89,6 +91,28 @@ impl<'a> Frame<'a> {
     }
 }
 
+// TODO this interface is a bit silly, as it requires encoding FrameData into a
+// &[u8], using that to construct a Frame, then copying all that data again.
+// I might need to split the implementation a bit, perhaps make a new thing that
+// stores FrameData instead of &[u8].
+impl<'a> Encodable for Frame<'a> {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodingError> {
+        if buf.len() < 5 + self.data_len + 1 {
+            return Err(EncodingError::BufferTooSmall);
+        }
+
+        buf[0] = FRAME_START;
+        buf[1] = self.data_type as u8;
+        buf[2] = FRAME_B3;
+        buf[3] = FRAME_B4;
+        buf[4] = self.data.len() as u8;
+        buf[5..(5 + self.data_len)].copy_from_slice(self.data);
+        buf[5 + self.data_len] = self.checksum;
+
+        Ok(5 + self.data_len + 1)
+    }
+}
+
 mod tests {
     use super::*;
 
@@ -118,5 +142,14 @@ mod tests {
                 0x7b,
             ])
         );
+    }
+
+    #[test]
+    fn encode_test() {
+        let mut buf: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let frame = Frame::new(DataType::ConnectRequest, 2, &[0xca, 0x01]);
+        let result = frame.encode(&mut buf);
+        assert_eq!(Ok(8), result);
+        assert_eq!([0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8], buf);
     }
 }
