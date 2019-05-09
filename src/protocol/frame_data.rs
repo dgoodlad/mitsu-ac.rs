@@ -406,12 +406,19 @@ impl Encodable for GetInfoResponse {
 ///
 /// Once we see this response, we know the device is ready to talk.
 #[derive(Debug, Eq, PartialEq)]
-pub struct ConnectResponse;
+pub struct ConnectResponse(u8);
 
 impl Parseable for ConnectResponse {
     fn parse(data: &[u8]) -> IResult<&[u8], Self> {
-        Ok((data, Self))
+        do_parse!(data,
+            b: be_u8 >>
+            (Self(b))
+        )
     }
+}
+
+impl EncodableDataType for ConnectResponse {
+    const DATALEN: usize = 1;
 }
 
 impl Encodable for ConnectResponse {
