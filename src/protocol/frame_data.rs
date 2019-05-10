@@ -22,7 +22,7 @@ pub enum FrameData {
 }
 
 impl FrameData {
-    pub fn parse(frame: Frame) -> IResult<&[u8], Self> {
+    pub fn parse(frame: Frame<&[u8]>) -> IResult<&[u8], Self> {
         match frame.data_type {
             DataType::SetRequest => Self::parse_data_type(FrameData::SetRequest, frame.data),
             DataType::GetInfoRequest => Self::parse_data_type(FrameData::GetInfoRequest, frame.data),
@@ -50,17 +50,15 @@ impl FrameData {
             FrameData::SetRequest(data) => data.encode(buffer),
             FrameData::GetInfoRequest(data) => data.encode(buffer),
             FrameData::ConnectRequest(data) => data.encode(buffer),
-            FrameData::SetResponse(data) => data.encode(buffer),
-            FrameData::GetInfoResponse(data) => data.encode(buffer),
-            FrameData::ConnectResponse(data) => data.encode(buffer),
+
+            FrameData::SetResponse(_)
+            | FrameData::GetInfoResponse(_)
+            | FrameData::ConnectResponse(_) =>
+                Err(EncodingError::NotImplemented),
 
             FrameData::Unknown => Err(EncodingError::UnknownDataType),
         }
     }
-}
-
-trait EncodableDataType : Encodable {
-    const DATALEN: usize = 0x10;
 }
 
 trait Parseable : Sized {
@@ -145,11 +143,13 @@ impl Parseable for SetRequest {
     }
 }
 
-impl EncodableDataType for SetRequest {}
+impl FixedSizeEncoding for SetRequest {
+    const LENGTH: usize = 0x10;
+}
 
 impl Encodable for SetRequest {
     fn encode<'a>(&self, buf: &'a mut [u8]) -> Result<usize, EncodingError> {
-        if buf.len() != Self::DATALEN {
+        if buf.len() != Self::LENGTH {
             Err(EncodingError::BufferTooSmall)
         } else {
             buf[0] = 0x01;
@@ -163,7 +163,7 @@ impl Encodable for SetRequest {
             self.widevane.encode(&mut buf [13..14])?;
             buf[14] = match self.temp { Some(ref temp) => temp.celsius_tenths().encode_as_half_deg_plus_offset(), None => 0x00 };
             buf[15] = 0;
-            Ok(Self::DATALEN)
+            Ok(Self::LENGTH)
         }
     }
 }
@@ -224,18 +224,20 @@ impl Parseable for GetInfoRequest {
     }
 }
 
-impl EncodableDataType for GetInfoRequest {}
-
 impl Encodable for GetInfoRequest {
     fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodingError> {
-        if buf.len() != Self::DATALEN {
+        if buf.len() != Self::LENGTH {
             Err(EncodingError::BufferTooSmall)
         } else {
             buf[0] = self.0 as u8;
             for i in &mut buf[1..16] { *i = 0 }
-            Ok(Self::DATALEN)
+            Ok(Self::LENGTH)
         }
     }
+}
+
+impl FixedSizeEncoding for GetInfoRequest {
+    const LENGTH: usize = 0x10;
 }
 
 /// The preamble that tells the device we're connected and want to talk
@@ -258,20 +260,20 @@ impl Parseable for ConnectRequest {
     }
 }
 
-impl EncodableDataType for ConnectRequest {
-    const DATALEN: usize = 2;
-}
-
 impl Encodable for ConnectRequest {
     fn encode(&self, buf: &mut [u8]) -> Result<usize, EncodingError> {
-        if buf.len() != Self::DATALEN {
+        if buf.len() != Self::LENGTH {
             Err(EncodingError::BufferTooSmall)
         } else {
             buf[0] = Self::BYTE1;
             buf[1] = Self::BYTE2;
-            Ok(Self::DATALEN)
+            Ok(Self::LENGTH)
         }
     }
+}
+
+impl FixedSizeEncoding for ConnectRequest {
+    const LENGTH: usize = 2;
 }
 
 /// Response to the SetRequest
@@ -286,12 +288,6 @@ impl Parseable for SetResponse {
             take!(16) >>
             (SetResponse)
         )
-    }
-}
-
-impl Encodable for SetResponse {
-    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
-        Err(EncodingError::NotImplemented)
     }
 }
 
@@ -396,12 +392,6 @@ impl Parseable for GetInfoResponse {
     }
 }
 
-impl Encodable for GetInfoResponse {
-    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
-        Err(EncodingError::NotImplemented)
-    }
-}
-
 /// Response to our `ConnectRequest`
 ///
 /// Once we see this response, we know the device is ready to talk.
@@ -417,16 +407,7 @@ impl Parseable for ConnectResponse {
     }
 }
 
-impl EncodableDataType for ConnectResponse {
-    const DATALEN: usize = 1;
-}
-
-impl Encodable for ConnectResponse {
-    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
-        Err(EncodingError::NotImplemented)
-    }
-}
-
+#[cfg(test)]
 mod tests {
     use super::*;
     use super::super::types::TenthDegreesC;
