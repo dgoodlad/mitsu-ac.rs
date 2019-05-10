@@ -5,4 +5,5 @@ authors = ["David Goodlad <david@goodlad.net>"]
 edition = "2018"
 
 [dependencies]
-nom = { version = "5.0.0-alpha2", default-features = false }
+nom = { version = "5.0.0-beta1", default-features = false }
+enum-repr = "0.2.4"

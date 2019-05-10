@@ -122,13 +122,13 @@ impl Parseable for SetRequest {
                 widevane: take_bits!(u8, 1) >>
                 ((power, mode, temp, fan, vane, widevane))
             )) >>
-            power: cond!(flags.0 == 1, map!(be_u8, Power::from)) >>
-            mode: cond!(flags.1 == 1, map!(be_u8, Mode::from)) >>
+            power: cond!(flags.0 == 1, map_opt!(be_u8, Power::from_repr)) >>
+            mode: cond!(flags.1 == 1, map_opt!(be_u8, Mode::from_repr)) >>
             _temp_mapped: cond!(flags.2 == 1, map!(be_u8, |b| Temperature::SetpointMapped { value: b }))>>
-            fan: cond!(flags.3 == 1, map!(be_u8, Fan::from)) >>
-            vane: cond!(flags.4 == 1, map!(be_u8, Vane::from)) >>
+            fan: cond!(flags.3 == 1, map_opt!(be_u8, Fan::from_repr)) >>
+            vane: cond!(flags.4 == 1, map_opt!(be_u8, Vane::from_repr)) >>
             take!(5) >>
-            widevane: cond!(flags.5 == 1, map!(be_u8, WideVane::from)) >>
+            widevane: cond!(flags.5 == 1, map_opt!(be_u8, WideVane::from_repr)) >>
             temp: cond!(flags.2 == 1, map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b })) >>
             take!(1) >>
             (SetRequest {
@@ -173,13 +173,13 @@ impl SetRequest {
         if into.len() != 2 { return Err(EncodingError::BufferTooSmall); }
 
         into[0] = 0x00u8 |
-            (match self.power { Some(Power::Unknown) => 0, Some(_) => 0b00000001, _ => 0 }) |
-            (match self.mode  { Some(Mode::Unknown)  => 0, Some(_) => 0b00000010, _ => 0 }) |
-            (match self.temp  {                            Some(_) => 0b00000100, _ => 0 }) |
-            (match self.fan   { Some(Fan::Unknown)   => 0, Some(_) => 0b00001000, _ => 0 }) |
-            (match self.vane  { Some(Vane::Unknown)  => 0, Some(_) => 0b00010000, _ => 0 });
+            (match self.power { Some(_) => 0b00000001, _ => 0 }) |
+            (match self.mode  { Some(_) => 0b00000010, _ => 0 }) |
+            (match self.temp  { Some(_) => 0b00000100, _ => 0 }) |
+            (match self.fan   { Some(_) => 0b00001000, _ => 0 }) |
+            (match self.vane  { Some(_) => 0b00010000, _ => 0 });
         into[1] = 0x00u8 |
-            (match self.widevane { Some(WideVane::Unknown) => 0, Some(_) => 0b00000001, _ => 0 });
+            (match self.widevane { Some(_) => 0b00000001, _ => 0 });
         Ok(into)
     }
 }
@@ -318,18 +318,18 @@ impl GetInfoResponse {
         do_parse!(input,
             tag!(&[InfoType::Settings as u8]) >>
             take!(2) >>
-            power: map!(be_u8, Power::from) >>
+            power: map_opt!(be_u8, Power::from_repr) >>
             mode_and_isee: bits!(tuple!(
                 take_bits!(u8, 4),
-                map!(take_bits!(u8, 1), ISee::from),
-                map!(take_bits!(u8, 3), Mode::from))) >>
+                map_opt!(take_bits!(u8, 1), ISee::from_repr),
+                map_opt!(take_bits!(u8, 3), Mode::from_repr))) >>
             isee: value!(mode_and_isee.1) >>
             mode: value!(mode_and_isee.2) >>
             setpoint_mapped: map!(be_u8, |b| Temperature::SetpointMapped { value: b })>>
-            fan: map!(be_u8, Fan::from) >>
-            vane: map!(be_u8, Vane::from) >>
+            fan: map_opt!(be_u8, Fan::from_repr) >>
+            vane: map_opt!(be_u8, Vane::from_repr) >>
             take!(2) >>
-            widevane: map!(be_u8, WideVane::from) >>
+            widevane: map_opt!(be_u8, WideVane::from_repr) >>
             setpoint_half_deg: map!(be_u8, |b| Temperature::HalfDegreesCPlusOffset { value: b }) >>
             setpoint: value!(match (setpoint_mapped, setpoint_half_deg) {
                 (s, Temperature::HalfDegreesCPlusOffset { value: 0 }) => s,
