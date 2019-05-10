@@ -3,6 +3,8 @@ use nom::do_parse;
 
 use super::encoding::{Encodable, EncodingError, SizedEncoding};
 
+/// The type of data contained in a frame. We don't know all of the possible
+/// types, just a few that have been reverse-engineered.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DataType {
@@ -37,6 +39,10 @@ const FRAME_START: u8 = 0xfc;
 const FRAME_B3: u8 = 0x01;
 const FRAME_B4: u8 = 0x30;
 
+/// A single protocol frame, mainly here to identify and wrap some data.
+/// Generally used as either `Frame<&[u8]>` in the case of a frame that's just
+/// been parsed from a byte slice, or as `Frame<FrameData>` for a frame that
+/// is being built up to be encoded into a byte slice.
 #[derive(Debug, Eq, PartialEq)]
 pub struct Frame<T: Encodable> {
     pub data_type: DataType,
@@ -61,6 +67,19 @@ impl<T> Frame<T> where T: Encodable {
     }
 }
 
+/// A frame parsed from a byte slice
+///
+/// ```
+/// use mitsu_ac::protocol::{Frame, DataType};
+///
+/// let buf: &[u8] = &[0xfc, 0x5a, 0x01, 0x30, 0x02, 0xca, 0x01, 0xa8];
+///
+/// if let Ok((_, frame)) = Frame::parse(&buf) {
+///     assert_eq!(frame.data_type, DataType::ConnectRequest);
+///     assert_eq!(frame.data_len, 0x02);
+///     assert_eq!(frame.data, &[0xca, 0x01][0..2]);
+/// }
+/// ```
 impl Frame<&[u8]> {
     pub fn parse<'a>(data: &'a [u8]) -> nom::IResult<&'a [u8], Frame<&'a [u8]>> {
         do_parse!(data,
@@ -70,8 +89,7 @@ impl Frame<&[u8]> {
             data_len: map!(be_u8, |b| b as usize) >>
             data: take!(data_len) >>
             frame: value!(Frame::new(data_type, data_len, data)) >>
-            checksum: value!(checksum(data_type, data_len, data)) >>
-            verify!(be_u8, |b| b == checksum) >>
+            verify!(be_u8, |b| *b == checksum(data_type, data_len, data)) >>
             (frame)
         )
     }
