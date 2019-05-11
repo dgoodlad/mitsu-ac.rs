@@ -58,7 +58,7 @@ pub enum FrameParsingError<'a> {
 }
 
 impl<T> Frame<T> where T: Encodable {
-    fn new(data_type: DataType, data_len: usize, data: T) -> Self {
+    pub fn new(data_type: DataType, data_len: usize, data: T) -> Self {
         Self {
             data_type,
             data_len,
@@ -81,6 +81,10 @@ impl<T> Frame<T> where T: Encodable {
 /// }
 /// ```
 impl Frame<&[u8]> {
+    pub fn parse_until<'a>(data: &'a [u8]) -> nom::IResult<&'a [u8], &'a [u8]> {
+        take_till!(data, |b| b == FRAME_START)
+    }
+
     pub fn parse<'a>(data: &'a [u8]) -> nom::IResult<&'a [u8], Frame<&'a [u8]>> {
         do_parse!(data,
             tag!(&[FRAME_START]) >>

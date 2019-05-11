@@ -60,7 +60,46 @@ impl FrameData {
         }
     }
 
-    pub fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
+    fn data_type(&self) -> DataType {
+        match self {
+            FrameData::SetRequest(_) => DataType::SetRequest,
+            FrameData::GetInfoRequest(_) => DataType::GetInfoRequest,
+            FrameData::ConnectRequest(_) => DataType::ConnectRequest,
+
+            FrameData::SetResponse(_) => DataType::SetResponse,
+            FrameData::GetInfoResponse(_) => DataType::GetInfoResponse,
+            FrameData::ConnectResponse(_) => DataType::ConnectResponse,
+
+            _ => DataType::Unknown,
+        }
+    }
+}
+
+impl Into<Frame<FrameData>> for FrameData {
+    fn into(self) -> Frame<FrameData> {
+        Frame::new(self.data_type(), self.length(), self)
+    }
+}
+
+impl SizedEncoding for FrameData {
+    fn length(&self) -> usize {
+        match self {
+            FrameData::SetRequest(data) => data.length(),
+            FrameData::GetInfoRequest(data) => data.length(),
+            FrameData::ConnectRequest(data) => data.length(),
+
+            FrameData::SetResponse(_)
+            | FrameData::GetInfoResponse(_)
+            | FrameData::ConnectResponse(_) =>
+                0,
+
+            FrameData::Unknown => 0,
+        }
+    }
+}
+
+impl Encodable for FrameData {
+    fn encode(&self, buffer: &mut [u8]) -> Result<usize, EncodingError> {
         match self {
             FrameData::SetRequest(data) => data.encode(buffer),
             FrameData::GetInfoRequest(data) => data.encode(buffer),
@@ -228,6 +267,13 @@ impl From<u8> for InfoType {
 /// Requests the given InfoType data from the device
 #[derive(Debug, Eq, PartialEq)]
 pub struct GetInfoRequest(InfoType);
+
+
+impl GetInfoRequest {
+    pub fn new(info_type: InfoType) -> Self {
+        Self(info_type)
+    }
+}
 
 impl Parseable for GetInfoRequest {
     fn parse(data: &[u8]) -> IResult<&[u8], Self> {
