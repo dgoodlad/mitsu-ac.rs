@@ -22,6 +22,21 @@ pub enum FrameData {
 }
 
 impl FrameData {
+    /// Parses out the data from a given `Frame`
+    ///
+    /// ```
+    /// use mitsu_ac::protocol::{Frame, DataType, FrameData, ConnectResponse};
+    ///
+    /// let (_, frame) = Frame::parse(&[0xfc, 0x7a, 0x01, 0x30, 0x01, 0x00, 0x54]).unwrap();
+    /// let (_, data) = FrameData::parse(frame).unwrap();
+    ///
+    /// assert_eq!(data, FrameData::ConnectResponse(ConnectResponse::new(0)));
+    ///
+    /// match data {
+    ///     FrameData::ConnectResponse(r) => println!("Received a connect response: {:?}", r),
+    ///     _ => panic!("Unexpected frame"),
+    /// }
+    /// ```
     pub fn parse(frame: Frame<&[u8]>) -> IResult<&[u8], Self> {
         match frame.data_type {
             DataType::SetRequest => Self::parse_data_type(FrameData::SetRequest, frame.data),
@@ -397,6 +412,10 @@ impl Parseable for GetInfoResponse {
 /// Once we see this response, we know the device is ready to talk.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ConnectResponse(u8);
+
+impl ConnectResponse {
+    pub fn new(b: u8) -> Self { ConnectResponse(b) }
+}
 
 impl Parseable for ConnectResponse {
     fn parse(data: &[u8]) -> IResult<&[u8], Self> {
